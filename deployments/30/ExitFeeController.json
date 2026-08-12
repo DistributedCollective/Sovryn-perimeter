@@ -1,0 +1,1285 @@
+{
+  "contractName": "ExitFeeController",
+  "chainId": 30,
+  "proxyAddress": "0x8c1abf364bf214e41221562693bd9fb26d6fa563",
+  "implAddress": "0x33ef630510ba4d5e13cfc3a49ad35bef5c9c2604",
+  "implBytecodeHash": "0x694d8028a8ec9c45c5bb96a73e43d8d06fe6f0c064c544c8e2fe21932e16f56e",
+  "deploymentBlock": 9145878,
+  "deploymentTx": "0x690cff6bcc8abfb38b1a0b75cc6f7eba1f37dacc29705f4cfbfcd9b6abb597d7",
+  "timestamp": 1786568797047,
+  "gitSha": "881c74d",
+  "abi": [
+    {
+      "type": "constructor",
+      "inputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "MAX_BPS",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint16",
+          "internalType": "uint16"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "acceptOwnership",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "actorKeys",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address[]",
+          "internalType": "address[]"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "actorPolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "actor",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "tuple",
+          "internalType": "struct IExitFeeController.RatePolicy",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "admin",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "exitFeeEnabled",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "feeReceiver",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "initialize",
+      "inputs": [
+        {
+          "name": "newOwner_",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "owner",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "pendingOwner",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "proxiableUUID",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "quoteExitFee",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProduct",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "actor",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "grossAmount",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "quote",
+          "type": "tuple",
+          "internalType": "struct IExitFeeController.ExitFeeQuote",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            },
+            {
+              "name": "feeAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "netAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "feeReceiver",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "reason",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ]
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "removeActorPolicies",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "actors",
+          "type": "address[]",
+          "internalType": "address[]"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "removeActorPolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "actor",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "removeSubProductPolicies",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProducts",
+          "type": "address[]",
+          "internalType": "address[]"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "removeSubProductPolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProduct",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "renounceOwnership",
+      "inputs": [],
+      "outputs": [],
+      "stateMutability": "pure"
+    },
+    {
+      "type": "function",
+      "name": "setActorPolicies",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "actors",
+          "type": "address[]",
+          "internalType": "address[]"
+        },
+        {
+          "name": "policies",
+          "type": "tuple[]",
+          "internalType": "struct IExitFeeController.RatePolicy[]",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setActorPolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "actor",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "policy",
+          "type": "tuple",
+          "internalType": "struct IExitFeeController.RatePolicy",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setAdmin",
+      "inputs": [
+        {
+          "name": "newAdmin",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setExitFeeEnabled",
+      "inputs": [
+        {
+          "name": "enabled",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setFeeReceiver",
+      "inputs": [
+        {
+          "name": "newReceiver",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setSubProductPolicies",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProducts",
+          "type": "address[]",
+          "internalType": "address[]"
+        },
+        {
+          "name": "policies",
+          "type": "tuple[]",
+          "internalType": "struct IExitFeeController.RatePolicy[]",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setSubProductPolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProduct",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "policy",
+          "type": "tuple",
+          "internalType": "struct IExitFeeController.RatePolicy",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "setSurfacePolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "policy",
+          "type": "tuple",
+          "internalType": "struct IExitFeeController.RatePolicy",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "subProductKeys",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address[]",
+          "internalType": "address[]"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "subProductPolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProduct",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "tuple",
+          "internalType": "struct IExitFeeController.RatePolicy",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "surfacePolicy",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "tuple",
+          "internalType": "struct IExitFeeController.RatePolicy",
+          "components": [
+            {
+              "name": "active",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "rateBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            }
+          ]
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "transferOwnership",
+      "inputs": [
+        {
+          "name": "newOwner",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "upgradeTo",
+      "inputs": [
+        {
+          "name": "newImplementation",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "upgradeToAndCall",
+      "inputs": [
+        {
+          "name": "newImplementation",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "data",
+          "type": "bytes",
+          "internalType": "bytes"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "payable"
+    },
+    {
+      "type": "event",
+      "name": "ActorPolicyRemoved",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "actor",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "ActorPolicySet",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "actor",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "active",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        },
+        {
+          "name": "rateBps",
+          "type": "uint16",
+          "indexed": false,
+          "internalType": "uint16"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "AdminChanged",
+      "inputs": [
+        {
+          "name": "previousAdmin",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "newAdmin",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "AdminSet",
+      "inputs": [
+        {
+          "name": "admin",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "BeaconUpgraded",
+      "inputs": [
+        {
+          "name": "beacon",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "ExitFeeEnabledSet",
+      "inputs": [
+        {
+          "name": "enabled",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "FeeReceiverSet",
+      "inputs": [
+        {
+          "name": "feeReceiver",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "Initialized",
+      "inputs": [
+        {
+          "name": "version",
+          "type": "uint8",
+          "indexed": false,
+          "internalType": "uint8"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "OwnershipTransferStarted",
+      "inputs": [
+        {
+          "name": "previousOwner",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "newOwner",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "OwnershipTransferred",
+      "inputs": [
+        {
+          "name": "previousOwner",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "newOwner",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "SubProductPolicyRemoved",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProduct",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "SubProductPolicySet",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "subProduct",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "active",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        },
+        {
+          "name": "rateBps",
+          "type": "uint16",
+          "indexed": false,
+          "internalType": "uint16"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "SurfacePolicySet",
+      "inputs": [
+        {
+          "name": "surfaceId",
+          "type": "bytes32",
+          "indexed": true,
+          "internalType": "bytes32"
+        },
+        {
+          "name": "active",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        },
+        {
+          "name": "rateBps",
+          "type": "uint16",
+          "indexed": false,
+          "internalType": "uint16"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "Upgraded",
+      "inputs": [
+        {
+          "name": "implementation",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "error",
+      "name": "ActorZero",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "AdminZero",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "FeeReceiverZero",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "LengthMismatch",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "NotAdminOrOwner",
+      "inputs": [
+        {
+          "name": "caller",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "OwnershipCannotBeRenounced",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "RateExceedsMaxBps",
+      "inputs": [
+        {
+          "name": "rateBps",
+          "type": "uint16",
+          "internalType": "uint16"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "SubProductZero",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "UpgradeImplZero",
+      "inputs": []
+    }
+  ],
+  "storageLayout": {
+    "storage": [
+      {
+        "astId": 36764,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_initialized",
+        "offset": 0,
+        "slot": "0",
+        "type": "t_uint8"
+      },
+      {
+        "astId": 36767,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_initializing",
+        "offset": 1,
+        "slot": "0",
+        "type": "t_bool"
+      },
+      {
+        "astId": 36746,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "__gap",
+        "offset": 0,
+        "slot": "1",
+        "type": "t_array(t_uint256)50_storage"
+      },
+      {
+        "astId": 37062,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "__gap",
+        "offset": 0,
+        "slot": "51",
+        "type": "t_array(t_uint256)50_storage"
+      },
+      {
+        "astId": 37528,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "__gap",
+        "offset": 0,
+        "slot": "101",
+        "type": "t_array(t_uint256)50_storage"
+      },
+      {
+        "astId": 36270,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_owner",
+        "offset": 0,
+        "slot": "151",
+        "type": "t_address"
+      },
+      {
+        "astId": 36390,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "__gap",
+        "offset": 0,
+        "slot": "152",
+        "type": "t_array(t_uint256)49_storage"
+      },
+      {
+        "astId": 36163,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_pendingOwner",
+        "offset": 0,
+        "slot": "201",
+        "type": "t_address"
+      },
+      {
+        "astId": 36257,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "__gap",
+        "offset": 0,
+        "slot": "202",
+        "type": "t_array(t_uint256)49_storage"
+      },
+      {
+        "astId": 39780,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "exitFeeEnabled",
+        "offset": 0,
+        "slot": "251",
+        "type": "t_bool"
+      },
+      {
+        "astId": 39783,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "feeReceiver",
+        "offset": 1,
+        "slot": "251",
+        "type": "t_address"
+      },
+      {
+        "astId": 39789,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_surfacePolicy",
+        "offset": 0,
+        "slot": "252",
+        "type": "t_mapping(t_bytes32,t_struct(RatePolicy)41221_storage)"
+      },
+      {
+        "astId": 39797,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_subProductPolicy",
+        "offset": 0,
+        "slot": "253",
+        "type": "t_mapping(t_bytes32,t_mapping(t_address,t_struct(RatePolicy)41221_storage))"
+      },
+      {
+        "astId": 39805,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_actorPolicy",
+        "offset": 0,
+        "slot": "254",
+        "type": "t_mapping(t_bytes32,t_mapping(t_address,t_struct(RatePolicy)41221_storage))"
+      },
+      {
+        "astId": 39811,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_subProductKeys",
+        "offset": 0,
+        "slot": "255",
+        "type": "t_mapping(t_bytes32,t_struct(AddressSet)39329_storage)"
+      },
+      {
+        "astId": 39816,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "_actorKeys",
+        "offset": 0,
+        "slot": "256",
+        "type": "t_mapping(t_bytes32,t_struct(AddressSet)39329_storage)"
+      },
+      {
+        "astId": 39819,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "admin",
+        "offset": 0,
+        "slot": "257",
+        "type": "t_address"
+      },
+      {
+        "astId": 39823,
+        "contract": "src/ExitFeeController.sol:ExitFeeController",
+        "label": "__gap",
+        "offset": 0,
+        "slot": "258",
+        "type": "t_array(t_uint256)43_storage"
+      }
+    ],
+    "types": {
+      "t_address": {
+        "encoding": "inplace",
+        "label": "address",
+        "numberOfBytes": "20"
+      },
+      "t_array(t_bytes32)dyn_storage": {
+        "encoding": "dynamic_array",
+        "label": "bytes32[]",
+        "numberOfBytes": "32",
+        "base": "t_bytes32"
+      },
+      "t_array(t_uint256)43_storage": {
+        "encoding": "inplace",
+        "label": "uint256[43]",
+        "numberOfBytes": "1376",
+        "base": "t_uint256"
+      },
+      "t_array(t_uint256)49_storage": {
+        "encoding": "inplace",
+        "label": "uint256[49]",
+        "numberOfBytes": "1568",
+        "base": "t_uint256"
+      },
+      "t_array(t_uint256)50_storage": {
+        "encoding": "inplace",
+        "label": "uint256[50]",
+        "numberOfBytes": "1600",
+        "base": "t_uint256"
+      },
+      "t_bool": {
+        "encoding": "inplace",
+        "label": "bool",
+        "numberOfBytes": "1"
+      },
+      "t_bytes32": {
+        "encoding": "inplace",
+        "label": "bytes32",
+        "numberOfBytes": "32"
+      },
+      "t_mapping(t_address,t_struct(RatePolicy)41221_storage)": {
+        "encoding": "mapping",
+        "key": "t_address",
+        "label": "mapping(address => struct IExitFeeController.RatePolicy)",
+        "numberOfBytes": "32",
+        "value": "t_struct(RatePolicy)41221_storage"
+      },
+      "t_mapping(t_bytes32,t_mapping(t_address,t_struct(RatePolicy)41221_storage))": {
+        "encoding": "mapping",
+        "key": "t_bytes32",
+        "label": "mapping(bytes32 => mapping(address => struct IExitFeeController.RatePolicy))",
+        "numberOfBytes": "32",
+        "value": "t_mapping(t_address,t_struct(RatePolicy)41221_storage)"
+      },
+      "t_mapping(t_bytes32,t_struct(AddressSet)39329_storage)": {
+        "encoding": "mapping",
+        "key": "t_bytes32",
+        "label": "mapping(bytes32 => struct EnumerableSet.AddressSet)",
+        "numberOfBytes": "32",
+        "value": "t_struct(AddressSet)39329_storage"
+      },
+      "t_mapping(t_bytes32,t_struct(RatePolicy)41221_storage)": {
+        "encoding": "mapping",
+        "key": "t_bytes32",
+        "label": "mapping(bytes32 => struct IExitFeeController.RatePolicy)",
+        "numberOfBytes": "32",
+        "value": "t_struct(RatePolicy)41221_storage"
+      },
+      "t_mapping(t_bytes32,t_uint256)": {
+        "encoding": "mapping",
+        "key": "t_bytes32",
+        "label": "mapping(bytes32 => uint256)",
+        "numberOfBytes": "32",
+        "value": "t_uint256"
+      },
+      "t_struct(AddressSet)39329_storage": {
+        "encoding": "inplace",
+        "label": "struct EnumerableSet.AddressSet",
+        "numberOfBytes": "64",
+        "members": [
+          {
+            "astId": 39328,
+            "contract": "src/ExitFeeController.sol:ExitFeeController",
+            "label": "_inner",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_struct(Set)39014_storage"
+          }
+        ]
+      },
+      "t_struct(RatePolicy)41221_storage": {
+        "encoding": "inplace",
+        "label": "struct IExitFeeController.RatePolicy",
+        "numberOfBytes": "32",
+        "members": [
+          {
+            "astId": 41218,
+            "contract": "src/ExitFeeController.sol:ExitFeeController",
+            "label": "active",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_bool"
+          },
+          {
+            "astId": 41220,
+            "contract": "src/ExitFeeController.sol:ExitFeeController",
+            "label": "rateBps",
+            "offset": 1,
+            "slot": "0",
+            "type": "t_uint16"
+          }
+        ]
+      },
+      "t_struct(Set)39014_storage": {
+        "encoding": "inplace",
+        "label": "struct EnumerableSet.Set",
+        "numberOfBytes": "64",
+        "members": [
+          {
+            "astId": 39009,
+            "contract": "src/ExitFeeController.sol:ExitFeeController",
+            "label": "_values",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_array(t_bytes32)dyn_storage"
+          },
+          {
+            "astId": 39013,
+            "contract": "src/ExitFeeController.sol:ExitFeeController",
+            "label": "_indexes",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_bytes32,t_uint256)"
+          }
+        ]
+      },
+      "t_uint16": {
+        "encoding": "inplace",
+        "label": "uint16",
+        "numberOfBytes": "2"
+      },
+      "t_uint256": {
+        "encoding": "inplace",
+        "label": "uint256",
+        "numberOfBytes": "32"
+      },
+      "t_uint8": {
+        "encoding": "inplace",
+        "label": "uint8",
+        "numberOfBytes": "1"
+      }
+    }
+  }
+}
