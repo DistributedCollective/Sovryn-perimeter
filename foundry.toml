@@ -1,0 +1,45 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+auto_detect_solc = true
+optimizer = true
+optimizer_runs = 200
+# Pin the EVM target so solc 0.8.20 does NOT emit the PUSH0 (0x5f) opcode,
+# which only exists from the Shanghai hard fork. The controller/vault deploy
+# to Rootstock (RSK); pinning to "paris" keeps the bytecode portable and
+# avoids a deploy/runtime brick on any RSK network that has not activated
+# PUSH0. (Without this, solc 0.8.20 defaults to "shanghai" → PUSH0 emitted.)
+evm_version = "paris"
+# Always emit `storageLayout` in build artifacts (out/<Contract>.sol/<Contract>.json).
+# The layout is the input to the upgrade-safety check (tools/check-upgrade-safety.sh):
+# at upgrade time we diff the candidate's layout against the active impl's saved
+# layout (deployments/<chain>/<Contract>.json) to confirm only __gap shrinks and
+# new fields appear at freed slots. Without this flag the layout field is missing
+# from the artifact and the check would have nothing to compare.
+extra_output = ["storageLayout"]
+fs_permissions = [
+    { access = "read-write", path = "./deployments" },
+    { access = "read",       path = "./out" },          # so deploy scripts can copy ABI+storageLayout from build artifacts
+]
+# `pragma experimental ABIEncoderV2;` in the unified interface is deprecated on
+# 0.8.x but needed for 0.5.x struct-return ABI. Run `forge build` once, capture
+# the actual emitted warning code, and add it below. Do not guess the value.
+# ignored_error_codes = [<code>]
+
+[profile.default.fmt]
+line_length = 110
+
+[profile.default.lint]
+# Function names like `sweepERC20`, `sweepRBTC`, `burnToBTC` keep acronyms
+# capitalized -- the spec uses this naming consistently (see
+# the spec's vault API and Sovryn's existing
+# WRBTC / ERC20 / RBTC naming convention). Strict mixedCase (sweepErc20)
+# would diverge from the spec without functional benefit.
+exclude_lints = ["mixed-case-function"]
+
+[rpc_endpoints]
+rsk_mainnet = "${RSK_MAINNET_RPC}"
+rsk_testnet = "${RSK_TESTNET_RPC}"

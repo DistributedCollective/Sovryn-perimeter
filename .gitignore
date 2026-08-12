@@ -1,0 +1,28 @@
+.DS_Store
+
+# Foundry
+out/
+cache/
+broadcast/*/dry-run/
+# Local-chain broadcast logs (anvil = 31337). Committed broadcast logs are
+# only for the mainnet/testnet deployments that map to a deployments/<chainId>/.
+broadcast/*/31337/
+
+# Local-chain deployment artifacts (anvil smoke tests). Mainnet (30) and
+# testnet (31) artifacts are committed -- they're the upgrade-safety check's
+# source of truth.
+deployments/31337/
+deployments/31338/
+crytic-export/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# Node (for any tooling/scripts)
+node_modules/

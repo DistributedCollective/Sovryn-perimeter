@@ -1,0 +1,29 @@
+# Aderyn Configuration
+#
+# Project-wide exclusions for findings that don't apply to Perimeter Fee's design.
+# Per-line suppressions stay inline (with rationale) for one-off cases.
+
+version = 1
+root = "."
+
+[detectors]
+# Detectors excluded for Perimeter Fee. Each entry is a deliberate design decision
+exclude = [
+    # Every admin function (setExitFeeEnabled, setFeeReceiver, setSurfacePolicy,
+    # setSubProductPolicy*, setActorPolicy*) is intentionally owner-gated.
+    # The controller is governance-owned (TimelockOwner on mainnet); the
+    # ExitFeeVault is admin-swept. "Centralization" is the design.
+    "centralization-risk",
+
+    # The batch policy setters (setSubProductPolicies, setActorPolicies)
+    # write N SSTOREs per entry by definition -- there is no cheaper way to
+    # set N rate policies than N storage slots. Loop body is minimal.
+    "costly-loop",
+
+    # Same batch setters revert atomically on validation failure (zero address,
+    # rate-above-MAX_BPS). Atomic application is the desired semantic:
+    # governance wants "all-or-nothing" for policy changes, not "partial apply
+    # with a list of failures". Better to revert the whole batch than to
+    # leave the controller in a half-configured state for governance.
+    "require-revert-in-loop",
+]

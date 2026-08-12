@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/**]
+  pull_request:
+    branches: [main]
+
+# Third-party actions are pinned to specific commit SHAs (not version tags)
+# to defend against tag-move supply-chain attacks. To update, look up the
+# new tag's SHA via `gh api repos/<owner>/<repo>/git/refs/tags/<tag>` and
+# bump both the SHA and the trailing version comment.
+
+permissions:
+  contents: read
+
+jobs:
+  forge-test:
+    name: forge test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+
+      - name: forge build
+        run: forge build --sizes
+
+      # Unit tests only. Fuzz + invariant campaigns are excluded from CI by policy
+      # (they belong to the manual deep-run proof gates, e.g. 10k runs x 5M calls
+      # before release) -- running them on every push would make CI take ages at
+      # real run counts. Run them locally / in the release gates:
+      #   forge test --match-test "(testFuzz_|invariant_)"
+      - name: forge test (unit only)
+        run: forge test -vv --no-match-test "(testFuzz_|invariant_)"
+
+  abi-equivalence:
+    name: ABI equivalence guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+
+      - name: forge build
+        run: forge build
+
+      - name: Run ABI equivalence check
+        # Verifies the unified IExitFeeController.sol and the v0_4 outlier
+        # have identical method selectors, event topics, error selectors,
+        # SkipReason enum ordinals, and compile under solc 0.5.17 /
+        # 0.6.11 / 0.8.20 / 0.4.26.
+        run: tools/check-abi-equivalence.sh
+
+  upgrade-safety-fixtures:
+    name: Upgrade-safety regression
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+
+      - name: Ensure python3
+        # ubuntu-latest already ships python3; sanity-check.
+        run: python3 --version
+
+      - name: forge build
+        run: forge build
+
+      - name: Run upgrade-safety regression scenarios
+        # Spins up an isolated anvil and exercises:
+        #   1. identity (no source change)             -> exit 0
+        #   2. GoodPackedV2 (packed safe upgrade)      -> exit 0
+        #   3. BadV2 (out-of-namespace storage)        -> exit 1
+        #   4. BadV3 (struct member reorder)           -> exit 1
+        # Anvil binds 8548 by default; can be overridden via $ANVIL_PORT
+        # if it clashes with another job on the same runner.
+        env:
+          ANVIL_PORT: 8548
+        run: tools/test-upgrade-safety.sh
