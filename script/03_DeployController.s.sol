@@ -24,14 +24,28 @@ import {ExitFeeController} from "../src/ExitFeeController.sol";
 ///             tools/finalize-deployment.sh ExitFeeController 03_DeployController <chainId>
 contract DeployController is Script {
     function run() external returns (address proxy, address impl) {
-        vm.startBroadcast();
-
-        // tx.origin under `vm.startBroadcast()` is the broadcast wallet
-        // (the --account or --private-key the script was invoked with).
-        // We pass it as initial owner so the deployer can run the
-        // activation sequence in 04_BootstrapController before handing
+        // The initial owner is baked into the proxy's initialize() calldata, so
+        // it becomes permanent on-chain state and must be the account that
+        // actually signs -- 04_BootstrapController runs from it before handing
         // off to the governance Safe.
-        address deployer = tx.origin;
+        //
+        // Read it from the unlocked signer, NOT from tx.origin: forge resolves
+        // tx.origin during the SIMULATION pass, where it is a placeholder of
+        // forge's own (a hash-derived address with no private key). Encoding
+        // that placeholder would sign the deploy correctly while installing an
+        // owner nobody controls, bricking the proxy. `vm.getWallets()` returns
+        // the wallets forge has actually unlocked, during simulation, so it is
+        // the same address that will sign the broadcast. Exactly one is
+        // required: zero means no signer was supplied, more than one is
+        // ambiguous about who ends up owning the proxy.
+        address[] memory wallets = vm.getWallets();
+        require(
+            wallets.length == 1,
+            "expected exactly one unlocked signer (pass a single --account or --private-key)"
+        );
+        address deployer = wallets[0];
+
+        vm.startBroadcast();
 
         impl = address(new ExitFeeController());
         bytes memory initData = abi.encodeCall(ExitFeeController.initialize, (deployer));

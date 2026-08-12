@@ -23,13 +23,32 @@ import {ExitFeeVault} from "../src/ExitFeeVault.sol";
 ///             tools/finalize-deployment.sh ExitFeeVault 01_DeployVault <chainId>
 contract DeployVault is Script {
     function run() external returns (address proxy, address impl) {
+        // The initial owner is baked into the proxy's initialize() calldata, so
+        // it becomes permanent on-chain state and must be the account that
+        // actually signs -- 02_BootstrapVault runs from it before handing off
+        // to the governance Safe.
+        //
+        // Read it from the unlocked signer, NOT from tx.origin: forge resolves
+        // tx.origin during the SIMULATION pass, where it is a placeholder of
+        // forge's own (a hash-derived address with no private key). Encoding
+        // that placeholder would sign the deploy correctly while installing an
+        // owner nobody controls, bricking the proxy. `vm.getWallets()` returns
+        // the wallets forge has actually unlocked, during simulation, so it is
+        // the same address that will sign the broadcast. Exactly one is
+        // required: zero means no signer was supplied, more than one is
+        // ambiguous about who ends up owning the proxy.
+        address[] memory wallets = vm.getWallets();
+        require(
+            wallets.length == 1,
+            "expected exactly one unlocked signer (pass a single --account or --private-key)"
+        );
+        address deployer = wallets[0];
+
         vm.startBroadcast();
 
-        // tx.origin under `vm.startBroadcast()` is the broadcast wallet.
-        // Initialize sees `newOwner_ == msg.sender` and skips the
-        // immediate _transferOwnership, leaving the deployer as owner
-        // so 02_BootstrapVault can set defaultRecipient + transferOwnership.
-        address deployer = tx.origin;
+        // Initialize sees `newOwner_ == msg.sender` and skips the immediate
+        // _transferOwnership, leaving the deployer as owner so
+        // 02_BootstrapVault can set defaultRecipient + transferOwnership.
 
         impl = address(new ExitFeeVault());
         bytes memory initData = abi.encodeCall(ExitFeeVault.initialize, (deployer));
