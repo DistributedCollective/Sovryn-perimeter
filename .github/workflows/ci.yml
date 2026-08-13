@@ -26,6 +26,20 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+        with:
+          # Pin the toolchain: this repo's whole provenance story is that the
+          # deployed bytecode is reproducible from source, which a drifting
+          # compiler quietly undermines. It also makes the cache key stable --
+          # `stable` re-resolves on every Foundry release, missing the cache and
+          # forcing a fresh download of the release + its attestation from the
+          # GitHub CDN. That download is what broke CI on 2026-08-12
+          # (`curl: (56) Connection died` fetching the attestation, twice).
+          version: v1.7.1
+          # Keyed on the pinned version rather than the commit SHA, so the
+          # toolchain is restored from cache across commits and jobs instead of
+          # being re-downloaded for each one.
+          cache-key: foundry-${{ runner.os }}-v1.7.1
+          cache-restore-keys: foundry-${{ runner.os }}-
 
       - name: forge build
         run: forge build --sizes
@@ -49,6 +63,20 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+        with:
+          # Pin the toolchain: this repo's whole provenance story is that the
+          # deployed bytecode is reproducible from source, which a drifting
+          # compiler quietly undermines. It also makes the cache key stable --
+          # `stable` re-resolves on every Foundry release, missing the cache and
+          # forcing a fresh download of the release + its attestation from the
+          # GitHub CDN. That download is what broke CI on 2026-08-12
+          # (`curl: (56) Connection died` fetching the attestation, twice).
+          version: v1.7.1
+          # Keyed on the pinned version rather than the commit SHA, so the
+          # toolchain is restored from cache across commits and jobs instead of
+          # being re-downloaded for each one.
+          cache-key: foundry-${{ runner.os }}-v1.7.1
+          cache-restore-keys: foundry-${{ runner.os }}-
 
       - name: forge build
         run: forge build
@@ -71,6 +99,20 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
+        with:
+          # Pin the toolchain: this repo's whole provenance story is that the
+          # deployed bytecode is reproducible from source, which a drifting
+          # compiler quietly undermines. It also makes the cache key stable --
+          # `stable` re-resolves on every Foundry release, missing the cache and
+          # forcing a fresh download of the release + its attestation from the
+          # GitHub CDN. That download is what broke CI on 2026-08-12
+          # (`curl: (56) Connection died` fetching the attestation, twice).
+          version: v1.7.1
+          # Keyed on the pinned version rather than the commit SHA, so the
+          # toolchain is restored from cache across commits and jobs instead of
+          # being re-downloaded for each one.
+          cache-key: foundry-${{ runner.os }}-v1.7.1
+          cache-restore-keys: foundry-${{ runner.os }}-
 
       - name: Ensure python3
         # ubuntu-latest already ships python3; sanity-check.
