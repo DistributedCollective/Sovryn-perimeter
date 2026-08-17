@@ -26,14 +26,14 @@ import {IExitFeeController} from "../../src/ExitFeeController.sol";
 ///
 ///      HOW TO REGENERATE (do this whenever ExitFeeController's storage
 ///      changes): mirror `forge inspect ExitFeeController storageLayout`
-///      EXACTLY — every own variable (slots 251..270 today), in the same
+///      EXACTLY — every own variable (slots 251..271 today), in the same
 ///      order, with the same struct types (imported from
 ///      IExitFeeController so the type definitions are byte-identical) —
-///      then place the two packed uint128 fields at the FIRST previously
-///      __gap slot and shrink __gap by 1 (30 -> 29). The mirror below is
-///      current as of the security-perimeter delay-extension storage
-///      (securityPerimeterEnabled / globalDelaySeconds / admin + bypass
-///      tiers + passthrough registry + enumeration sets).
+///      then place the two packed uint128 fields at the FIRST still-unused
+///      __gap slot and shrink __gap by 1 (29 -> 28). The mirror below is
+///      current as of the security-perimeter delay extension (admin alone in
+///      its shipped slot, bypass tiers, passthrough registry, enumeration
+///      sets, then the two delay scalars in a reclaimed gap slot).
 contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
@@ -53,9 +53,7 @@ contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorKeys;
 
-    // slot 257 (packed: bool@0, uint32@1, address@5) — DO NOT reorder.
-    bool public securityPerimeterEnabled;
-    uint32 public globalDelaySeconds;
+    // slot 257 — `admin` alone, exactly as the fee release shipped it.
     address public admin;
 
     // slots 258..270
@@ -70,15 +68,21 @@ contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable
     EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 267..268 (2 slots)
     EnumerableSet.Bytes32Set internal _passthroughSurfaceIds; // slots 269..270 (2 slots)
 
-    // Two packed uint128 fields. Both go at slot 271 (the first slot
-    // previously inside __gap[30]). Solidity puts them at offset 0 and
-    // offset 16 of the SAME slot. The gap should shrink to __gap[29].
+    // slot 271 (packed: bool@0, uint32@1, uint216@5) — delay scalars, slot
+    // fully consumed so an appended field starts at the next whole slot.
+    bool public securityPerimeterEnabled;
+    uint32 public globalDelaySeconds;
+    uint216 private __slot271Reserved;
+
+    // Two packed uint128 fields. Both go at slot 272 (the first slot still
+    // inside __gap[29]) at offset 0 and offset 16 of the SAME slot — this is
+    // what closing slot 271 buys. The gap should shrink to __gap[28].
     uint128 public newA;
     uint128 public newB;
 
     // __gap shrinks by exactly 1 slot (one slot reclaimed for the two
-    // packed uint128 fields): 30 -> 29.
-    uint256[29] private __gap;
+    // packed uint128 fields): 29 -> 28.
+    uint256[28] private __gap;
 
     function _authorizeUpgrade(address) internal view override onlyOwner {}
 }

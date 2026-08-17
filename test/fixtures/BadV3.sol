@@ -25,7 +25,7 @@ import {IExitFeeController} from "../../src/ExitFeeController.sol";
 ///
 ///      HOW TO REGENERATE (do this whenever ExitFeeController's storage
 ///      changes): mirror `forge inspect ExitFeeController storageLayout`
-///      EXACTLY (slots 251..270 today, __gap unchanged at [30]) — the
+///      EXACTLY (slots 251..271 today, __gap unchanged at [29]) — the
 ///      ONLY intentional deviation is the LOCAL RatePolicy below whose
 ///      two members are swapped. Everything else must match byte-for-byte
 ///      so the tool rejects for the struct reorder and NOT for a missing
@@ -61,8 +61,6 @@ contract BadV3 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorKeys;
 
     // slot 257 (packed: bool@0, uint32@1, address@5) — DO NOT reorder.
-    bool public securityPerimeterEnabled;
-    uint32 public globalDelaySeconds;
     address public admin;
 
     // slots 258..270 — DelayBypassPolicy imported so it stays identical.
@@ -78,7 +76,11 @@ contract BadV3 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     EnumerableSet.Bytes32Set internal _passthroughSurfaceIds; // slots 269..270 (2 slots)
 
     // __gap unchanged — this fixture adds NO storage; it only reorders a struct.
-    uint256[30] private __gap;
+    bool public securityPerimeterEnabled;
+    uint32 public globalDelaySeconds;
+    uint216 private __slot271Reserved;
+
+    uint256[29] private __gap;
 
     function _authorizeUpgrade(address) internal view override onlyOwner {}
 }

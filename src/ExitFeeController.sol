@@ -58,17 +58,11 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     //   255        _subProductKeys          mapping head (enumeration index)
     //   256        _actorKeys               mapping head (enumeration index)
     //
-    //   ── Delay extension (added BELOW the fee slots) ──
-    //   257        securityPerimeterEnabled (1 byte) + globalDelaySeconds (4) +
-    //              admin (20 bytes) = 25 bytes -- PACKED into ONE slot. (admin
-    //              is a SINGLE guardian address, NOT an OZ AccessControl role,
-    //               the controller stays single-Owner; only the queue carries
-    //              a two-principal machinery. The perimeter kill switch
-    //              and -- since the core merge -- the
-    //              fee levers `setExitFeeEnabled` / `setFeeReceiver` need an
-    //              `Admin`-capable path, so one packed address is the minimal
-    //              addition and costs ZERO extra slots by packing with the
-    //              bool + uint32. The SAME field serves both gates.)
+    //   257        admin -- the FEE release already shipped this slot, so it
+    //              is fixed: `admin` at offset 0, alone. The delay extension
+    //              adds NOTHING beside it, even though 12 bytes are free.
+    //
+    //   ── Delay extension (added inside the slots __gap reserved) ──
     //   258        _surfaceBypass           mapping head
     //   259        _subProductBypass        mapping head
     //   260        _actorBypass             mapping head
@@ -82,27 +76,26 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     //   268        _bypassSurfaceIds._indexes (mapping head)             ┘
     //   269        _passthroughSurfaceIds._values  (Bytes32Set array head) ┐ 2 slots
     //   270        _passthroughSurfaceIds._indexes (mapping head)          ┘
-    //   271 .. 300 __gap[30] -- preserves the OZ-style 50-slot namespace
-    //                           (50 - 20 own slots used).
+    //   271        securityPerimeterEnabled (1 byte) + globalDelaySeconds
+    //              (4 bytes) + __slot271Reserved (27 bytes) -- one reclaimed
+    //              gap slot, fully consumed so later upgrades start clean.
+    //   272 .. 300 __gap[29] -- preserves the OZ-style 50-slot namespace
+    //                           (50 - 21 own slots used).
     //
-    // Own-slot count re-derived at implementation via `forge inspect
-    // ExitFeeController storage-layout`: 6 fee slots + 14 delay slots
-    // (1 packed scalar+admin slot + 3 bypass mapping heads + 1 surface-bypass
-    // Bytes32Set [2 slots] + 2 sub/actor bypass enumeration heads + 1 passthrough
-    // nested-mapping head + 1 passthrough enumeration head + 1 any-tier-touched
-    // bypass Bytes32Set [2 slots] + 1 passthrough-surface Bytes32Set [2 slots])
-    // = 20, so __gap = 50 - 20 = 30 (added the two
-    // any-tier-touched master sets on top of 's per-tier sets).
-    // Since ColFee is not yet deployed, this is a first-deploy layout choice,
-    // not a UUPS migration.
+    // Own slots: 6 fee (251 packed + 252..256) + 1 admin (257) + 14 delay
+    // (258..271) = 21, so __gap = 50 - 21 = 29 and the namespace still ends
+    // at 300.
     //
-    // Merge note: the core branch declared a standalone
-    // `admin` at slot 257 (__gap[43]); this branch's packed slot-257
-    // `admin` absorbs it -- one field, both gates, layout above unchanged.
+    // WHY the two delay scalars are NOT packed beside `admin`: they would fit
+    // (20 + 1 + 4 = 25 bytes), and the free bytes read as zero, which is the
+    // desired disabled-at-upgrade state. But slot 257 is NOT part of the gap
+    // the shipped fee layout reserved, and the upgrade-safety check admits new
+    // state only inside reclaimed gap slots. Spending one gap slot out of the
+    // thirty available is cheaper than relaxing that check.
     //
-    // Upgrades that add storage to THIS contract MUST consume from __gap
-    // and reduce its length by exactly the number of slots added. They
-    // MUST NOT reorder, insert, or change the type of any preceding slot.
+    // Upgrades that add storage to THIS contract MUST consume from __gap and
+    // reduce its length by exactly the number of slots added. They MUST NOT
+    // reorder, insert, or change the type of any preceding slot.
 
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
@@ -166,32 +159,6 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorKeys;
 
-    // ─── Delay extension storage ────────────────────────────────────────
-    //
-    // `securityPerimeterEnabled` (bool, 1 byte), `globalDelaySeconds`
-    // (uint32, 4 bytes) and `admin` (address, 20 bytes) are declared
-    // consecutively and therefore share one slot. Any change to the order or
-    // width of these three moves `admin`, so re-derive the layout with
-    // `forge inspect` and re-check it against the deployed record before
-    // shipping an upgrade.
-
-    /// @notice Global kill switch for the DELAY perimeter. Independent of
-    ///         `exitFeeEnabled`: turning fees off does NOT disable the
-    ///         perimeter, and a fee-inactive surface can still be delay-active.
-    ///         When false, `quoteExitDelayFor` short-circuits to
-    ///         `(0, raw, owner)` without consulting the bypass tiers, the
-    ///         passthrough registry, or the queue.
-    bool public securityPerimeterEnabled;
-
-    /// @notice One delay for EVERY surface (uint32 gives ~136 years of head
-    ///         room). There is no per-surface delay *duration* — only the
-    ///         per-tier bypass toggles below exempt a surface, sub-product or
-    ///         actor. The `>= queue.minimumDelaySeconds` relationship is a
-    ///         liveness invariant enforced PER-REQUEST in the queue, not a
-    ///         cross-contract setter guard here: the controller never reads or
-    ///         calls the queue.
-    uint32 public globalDelaySeconds;
-
     /// @notice Fast operational guardian. A SINGLE stored address checked by
     ///         `onlyAdminOrOwner` -- NOT an OZ AccessControl role (the
     ///         controller stays single-Owner for configuration). It authorizes
@@ -201,7 +168,20 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///         MAY equal the owner -- nothing requires the two authorities to
     ///         be distinct. Unset (`address(0)`) until the owner appoints one;
     ///         while unset, `onlyAdminOrOwner` admits only the owner.
+    ///
+    ///         DECLARED FIRST, ALONE IN ITS SLOT, and BEFORE any delay field:
+    ///         `admin` already exists in the deployed proxy at slot 257
+    ///         offset 0. Packing anything ahead of it would shift it within
+    ///         the slot and make the stored address unreadable. Nothing may be
+    ///         inserted above this line.
     address public admin;
+
+    // ─── Delay extension storage ────────────────────────────────────────
+    //
+    // Everything below is NEW state, taken from `__gap`. `admin` above keeps
+    // the slot it already occupies in the deployed proxy, and nothing is
+    // packed into the free bytes beside it: new state starts at the first
+    // slot the deployed layout reserved as gap.
 
     /// @dev Surface-tier delay bypass. Key: `surfaceId`. Value:
     ///      `DelayBypassPolicy {active, bypass}`. Mirrors `_surfacePolicy`'s
@@ -281,8 +261,41 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///      loses the probe point). `passthroughSurfaceIds()` exposes it.
     EnumerableSet.Bytes32Set internal _passthroughSurfaceIds;
 
+    // The two delay scalars are declared HERE, last, rather than beside
+    // `admin`. Declared next to `admin` they would pack into the free bytes of
+    // its slot -- safe in itself, but that slot is not part of the gap the
+    // deployed layout reserved, and the upgrade-safety check (rightly) only
+    // admits new state inside reclaimed gap slots. Declared here they share
+    // one clean gap slot instead, and the check passes unmodified.
+
+    /// @notice Global kill switch for the DELAY perimeter. Independent of
+    ///         `exitFeeEnabled`: turning fees off does NOT disable the
+    ///         perimeter, and a fee-inactive surface can still be delay-active.
+    ///         When false, `quoteExitDelayFor` short-circuits to
+    ///         `(0, raw, owner)` without consulting the bypass tiers, the
+    ///         passthrough registry, or the queue.
+    bool public securityPerimeterEnabled;
+
+    /// @notice One delay for EVERY surface (uint32 gives ~136 years of head
+    ///         room). There is no per-surface delay *duration* -- only the
+    ///         per-tier bypass toggles above exempt a surface, sub-product or
+    ///         actor. The `>= queue.minimumDelaySeconds` relationship is a
+    ///         liveness invariant enforced PER-REQUEST in the queue, not a
+    ///         cross-contract setter guard here: the controller never reads or
+    ///         calls the queue.
+    uint32 public globalDelaySeconds;
+
+    /// @dev Closes slot 271. Without it the slot keeps 27 free bytes, and the
+    ///      next field a future upgrade appends would pack into them — landing
+    ///      in a slot that is NOT part of the gap this release reserves, which
+    ///      the upgrade-safety check refuses. Reserving the remainder here
+    ///      costs nothing (the slot is already spent) and lets every later
+    ///      upgrade start cleanly at the next whole gap slot.
     // aderyn-ignore-next-line(unused-state-variable)
-    uint256[30] private __gap;
+    uint216 private __slot271Reserved;
+
+    // aderyn-ignore-next-line(unused-state-variable)
+    uint256[29] private __gap;
 
     // ─── Custom errors ──────────────────────────────────────────────────
 
