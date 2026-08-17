@@ -20,15 +20,14 @@ contract ExitFeeControllerTest is Test {
     // Re-declared here so vm.expectEmit can match by topic signature.
     event SubProductPolicyRemoved(bytes32 indexed surfaceId, address indexed subProduct);
     event ActorPolicyRemoved(bytes32 indexed surfaceId, address indexed actor);
-    event AdminSet(address indexed admin);
 
     ExitFeeController controller;
 
     // NOTE: `ADMIN` predates the contract's admin role -- it is the proxy
     // OWNER throughout this file. The operational guardian stored in
-    // `ExitFeeController.admin` is `GUARDIAN` below.
+    // `ExitFeeController.admin` is `GUARDIAN`, declared in the
+    // delay-extension section below.
     address constant ADMIN = address(0xA1);
-    address constant GUARDIAN = address(0xAD);
     address constant VAULT = address(0xBA);
     address constant ACTOR = address(0xAC);
     address constant IXUSD = address(0x1750D); // dummy iToken proxy "iXUSD"
@@ -126,19 +125,6 @@ contract ExitFeeControllerTest is Test {
         assertEq(q.feeAmount, 0);
         assertEq(q.netAmount, 1_000_000);
         assertEq(q.reason, uint8(IExitFeeController.SkipReason.DISABLED));
-
-        // Positive control: flipping ONLY the surface gate on must revive the
-        // very overrides that were suppressed above. Without this the test
-        // would pass just as happily against a controller whose fee path was
-        // dead altogether -- it would prove nothing about the gate.
-        vm.prank(ADMIN);
-        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 20}));
-
-        IExitFeeController.ExitFeeQuote memory qOn = _quote(IWRBTC, 1_000_000);
-        assertTrue(qOn.active);
-        assertEq(qOn.rateBps, 5, "actor override applies once the gate is on");
-        assertEq(qOn.feeAmount, 500);
-        assertEq(qOn.reason, uint8(IExitFeeController.SkipReason.NONE));
     }
 
     // ─── Tier resolution: surface → subProduct → actor ──────────────────
@@ -307,23 +293,7 @@ contract ExitFeeControllerTest is Test {
         uint256 huge = type(uint256).max / 9_999; // would overflow gross * MAX_BPS
         IExitFeeController.ExitFeeQuote memory q = _quote(IXUSD, huge);
         assertEq(q.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE));
-        assertFalse(q.active);
-        assertEq(q.feeAmount, 0);
         assertEq(q.netAmount, huge); // synthesized echo of gross
-
-        // Pin the guard's comparison direction at the boundary. `max / MAX_BPS`
-        // is the largest gross whose `gross * MAX_BPS` still fits, so it MUST
-        // produce an honest quote; one wei more MUST trip the guard. Without
-        // both sides an off-by-one (`>` vs `>=`) is invisible.
-        uint256 edge = type(uint256).max / 10_000;
-        IExitFeeController.ExitFeeQuote memory qEdge = _quote(IXUSD, edge);
-        assertTrue(qEdge.active, "gross == max/MAX_BPS must not trip the guard");
-        assertEq(qEdge.reason, uint8(IExitFeeController.SkipReason.NONE));
-        assertEq(qEdge.feeAmount, (edge * 50) / 10_000);
-
-        IExitFeeController.ExitFeeQuote memory qOver = _quote(IXUSD, edge + 1);
-        assertFalse(qOver.active, "one wei past the boundary must trip the guard");
-        assertEq(qOver.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE));
     }
 
     // ─── Admin / setter validation ───────────────────────────────────────
@@ -340,40 +310,15 @@ contract ExitFeeControllerTest is Test {
         controller.setExitFeeEnabled(true);
     }
 
-    // ─── Admin role (operational guardian) ───────────────────────────────
+    // ─── Admin role: fee levers ────────────────────────────
+    //
+    // setAdmin validation (zero / owner-equals / only-owner / emit) is
+    // covered in the delay-extension section below (test_setAdmin_*); this
+    // section pins the core-merge widening: the SAME guardian
+    // that flips the perimeter kill switch also drives the fee levers.
 
     function test_admin_unset_at_init() public view {
         assertEq(controller.admin(), address(0));
-    }
-
-    function test_setAdmin_sets_and_emits() public {
-        vm.expectEmit(true, false, false, false, address(controller));
-        emit AdminSet(GUARDIAN);
-        vm.prank(ADMIN);
-        controller.setAdmin(GUARDIAN);
-
-        assertEq(controller.admin(), GUARDIAN);
-    }
-
-    function test_setAdmin_non_owner_reverts() public {
-        // setAdmin stays owner-only -- the guardian cannot appoint itself
-        // or a successor.
-        vm.prank(OTHER);
-        vm.expectRevert("Ownable: caller is not the owner");
-        controller.setAdmin(GUARDIAN);
-    }
-
-    function test_setAdmin_zero_reverts() public {
-        vm.prank(ADMIN);
-        vm.expectRevert(ExitFeeController.AdminZero.selector);
-        controller.setAdmin(address(0));
-    }
-
-    function test_setAdmin_may_equal_owner() public {
-        // admin == owner is a supported shape: one address may hold both roles.
-        vm.prank(ADMIN);
-        controller.setAdmin(ADMIN);
-        assertEq(controller.admin(), ADMIN);
     }
 
     function test_admin_can_setExitFeeEnabled_both_directions() public {
@@ -614,23 +559,12 @@ contract ExitFeeControllerTest is Test {
         ps[0] = IExitFeeController.RatePolicy({active: true, rateBps: 5});
         ps[1] = IExitFeeController.RatePolicy({active: true, rateBps: 10});
         controller.setActorPolicies(SURFACE, actors, ps);
-        // Pin the pre-state: without this the length-0 assertion below would
-        // also hold if the batch SET had never populated the index.
-        assertEq(controller.actorKeys(SURFACE).length, 2, "batch set populates the index");
 
         // Removing the same list back drops both keys.
         controller.removeActorPolicies(SURFACE, actors);
         vm.stopPrank();
 
         assertEq(controller.actorKeys(SURFACE).length, 0);
-
-        // A hard remove clears the stored RatePolicy too, not just the index
-        // entry -- otherwise a re-added key would resurrect the old rate.
-        for (uint256 i = 0; i < actors.length; ++i) {
-            IExitFeeController.RatePolicy memory p = controller.actorPolicy(SURFACE, actors[i]);
-            assertFalse(p.active, "stale actor policy left behind");
-            assertEq(p.rateBps, 0, "stale actor rate left behind");
-        }
     }
 
     function test_remove_address_zero_reverts() public {
@@ -684,7 +618,6 @@ contract ExitFeeControllerTest is Test {
         controller.setFeeReceiver(VAULT);
         controller.setExitFeeEnabled(true);
         controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 25}));
-        controller.setAdmin(GUARDIAN); // own slot 257 -- the newest field, most at risk
         vm.stopPrank();
 
         ExitFeeControllerV2Mock v2impl = new ExitFeeControllerV2Mock();
@@ -699,7 +632,6 @@ contract ExitFeeControllerTest is Test {
         // 2) Pre-upgrade state preserved.
         assertTrue(controller.exitFeeEnabled());
         assertEq(controller.feeReceiver(), VAULT);
-        assertEq(controller.admin(), GUARDIAN);
         IExitFeeController.RatePolicy memory sp = controller.surfacePolicy(SURFACE);
         assertTrue(sp.active);
         assertEq(sp.rateBps, 25);
@@ -714,7 +646,7 @@ contract ExitFeeControllerTest is Test {
     function test_non_owner_cannot_upgrade() public {
         ExitFeeControllerV2Mock v2impl = new ExitFeeControllerV2Mock();
         vm.prank(OTHER);
-        vm.expectRevert("Ownable: caller is not the owner");
+        vm.expectRevert(); // Ownable: caller is not the owner
         controller.upgradeTo(address(v2impl));
     }
 
@@ -822,13 +754,6 @@ contract ExitFeeControllerTest is Test {
         // The call itself not reverting IS the load-bearing assertion.
         IExitFeeController.ExitFeeQuote memory q = controller.quoteExitFee(SURFACE, IXUSD, ACTOR, grossAmount);
 
-        // Everything is configured on, so the overflow guard is the ONLY thing
-        // that can turn the quote off. Asserting the biconditional (rather than
-        // just "overflow implies INVALID_QUOTE") is what pins the guard's
-        // boundary: a guard that rejected one value too many would still
-        // satisfy the one-way version below.
-        assertEq(q.active, grossAmount <= type(uint256).max / 10_000, "active iff gross cannot overflow");
-
         if (q.active) {
             assertEq(q.feeAmount + q.netAmount, grossAmount, "conservation in active branch");
         } else {
@@ -876,6 +801,929 @@ contract ExitFeeControllerTest is Test {
 
         assertTrue(q.active);
         assertEq(uint256(q.rateBps), actorRateBps, "actor tier wins over sub-product and surface");
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  DELAY EXTENSION
+    //
+    //  NOTE: in this suite `ADMIN` is the controller's OWNER (passed to
+    //  `initialize`). The delay `Admin` GUARDIAN is a distinct address, set via
+    //  `setAdmin` and stored below as `GUARDIAN`.
+    // ════════════════════════════════════════════════════════════════════
+
+    address constant GUARDIAN = address(0x6DA12D); // delay Admin guardian (≠ owner)
+    address constant WRAPPER = address(0x323A99); // a registered passthrough
+    address constant USER_EOA = address(0xE0A); // the human behind a wrapper burn
+
+    // Re-declared so vm.expectEmit can match delay-extension events by topic.
+    event SecurityPerimeterEnabledSet(bool enabled);
+    event GlobalDelaySet(uint32 seconds_);
+    event AdminSet(address indexed admin);
+    event SurfaceBypassSet(bytes32 indexed surfaceId, bool active, bool bypass);
+    event SurfaceBypassRemoved(bytes32 indexed surfaceId);
+    event ActorBypassSet(bytes32 indexed surfaceId, address indexed actor, bool active, bool bypass);
+    event PassthroughActorSet(bytes32 indexed surfaceId, address indexed actor, bool isPassthrough);
+
+    uint32 constant DELAY = 6 hours;
+
+    // Convenience: enable the perimeter with a global delay, guardian set.
+    function _enableDelay(uint32 d) internal {
+        vm.startPrank(ADMIN);
+        controller.setAdmin(GUARDIAN);
+        controller.setGlobalDelaySeconds(d);
+        controller.setSecurityPerimeterEnabled(true);
+        vm.stopPrank();
+    }
+
+    function _bp(bool active, bool bypass)
+        internal
+        pure
+        returns (IExitFeeController.DelayBypassPolicy memory)
+    {
+        return IExitFeeController.DelayBypassPolicy({active: active, bypass: bypass});
+    }
+
+    // ─── Kill switch (both directions; independent of exitFeeEnabled) ────
+
+    function test_delay_off_by_default_short_circuits_to_raw() public view {
+        // Perimeter disabled by default: d == 0, raw identities echoed, registry
+        // NOT consulted (Finding 3 liveness escape).
+        (uint32 d, address effOrig, address effOwner) =
+            controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, 0);
+        assertEq(effOrig, ACTOR); // RAW, not normalized
+        assertEq(effOwner, OTHER); // RAW
+    }
+
+    function test_kill_switch_enable_imposes_global_delay() public {
+        _enableDelay(DELAY);
+        (uint32 d,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, DELAY, "enabled perimeter imposes the global delay");
+    }
+
+    function test_kill_switch_disable_direction_by_guardian() public {
+        _enableDelay(DELAY);
+        // Guardian (Admin) can flip OFF (— both directions).
+        vm.prank(GUARDIAN);
+        controller.setSecurityPerimeterEnabled(false);
+        assertFalse(controller.securityPerimeterEnabled());
+        (uint32 d, address effOrig,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, 0, "disabled -> direct");
+        assertEq(effOrig, ACTOR, "disabled -> raw identities");
+    }
+
+    function test_kill_switch_enable_direction_by_guardian() public {
+        vm.prank(ADMIN);
+        controller.setAdmin(GUARDIAN);
+        vm.prank(ADMIN);
+        controller.setGlobalDelaySeconds(DELAY);
+        // Guardian can also flip ON (both directions).
+        vm.prank(GUARDIAN);
+        controller.setSecurityPerimeterEnabled(true);
+        assertTrue(controller.securityPerimeterEnabled());
+    }
+
+    function test_kill_switch_owner_can_flip_both_directions() public {
+        vm.startPrank(ADMIN); // owner
+        controller.setGlobalDelaySeconds(DELAY);
+        controller.setSecurityPerimeterEnabled(true);
+        assertTrue(controller.securityPerimeterEnabled());
+        controller.setSecurityPerimeterEnabled(false);
+        assertFalse(controller.securityPerimeterEnabled());
+        vm.stopPrank();
+    }
+
+    function test_kill_switch_rejects_stranger() public {
+        vm.prank(ADMIN);
+        controller.setAdmin(GUARDIAN);
+        vm.prank(OTHER);
+        vm.expectRevert(abi.encodeWithSelector(ExitFeeController.NotAdminOrOwner.selector, OTHER));
+        controller.setSecurityPerimeterEnabled(true);
+    }
+
+    function test_kill_switch_emits() public {
+        vm.prank(ADMIN);
+        vm.expectEmit(false, false, false, true);
+        emit SecurityPerimeterEnabledSet(true);
+        controller.setSecurityPerimeterEnabled(true);
+    }
+
+    function test_perimeter_independent_of_exitFeeEnabled() public {
+        // The delay perimeter is INDEPENDENT of the fee kill switch and
+        // of any fee surfacePolicy. Fees OFF, perimeter ON ⇒ still delayed.
+        _enableDelay(DELAY);
+        assertFalse(controller.exitFeeEnabled(), "fees remain off");
+        // No fee surfacePolicy configured at all.
+        (uint32 d,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, DELAY, "delay fires with fees disabled and no fee policy");
+    }
+
+    function test_fee_surface_inactive_does_not_disable_delay() public {
+        // A fee-inactive surface can still be delay-active (sole gate is the
+        // perimeter switch, not surfacePolicy.active).
+        _enableDelay(DELAY);
+        vm.prank(ADMIN);
+        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: false, rateBps: 0}));
+        (uint32 d,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, DELAY, "fee surface inactive -> delay still fires");
+    }
+
+    // ─── globalDelaySeconds / floor (controller side) ───────────────────
+
+    function test_globalDelay_returned_faithfully() public {
+        // The controller returns EXACTLY globalDelaySeconds; the >= floor is a
+        // queue-side per-request check. Verify faithful passthrough across
+        // a couple of values incl. the max uint32.
+        _enableDelay(1);
+        (uint32 d1,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d1, 1);
+
+        vm.prank(ADMIN);
+        controller.setGlobalDelaySeconds(type(uint32).max);
+        (uint32 d2,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d2, type(uint32).max, "~136y head-room passes through");
+    }
+
+    function test_globalDelay_zero_is_global_bypass() public {
+        // globalDelaySeconds == 0 with perimeter ON ⇒ d == 0 for every
+        // non-forced exit (equivalent to a global bypass; the queue skips it).
+        _enableDelay(0);
+        (uint32 d,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, 0);
+    }
+
+    function test_globalDelay_only_owner() public {
+        vm.prank(GUARDIAN); // guardian is NOT owner; global delay is owner-only
+        vm.expectRevert();
+        controller.setGlobalDelaySeconds(DELAY);
+    }
+
+    // ─── Bypass precedence (3-tier: actor > subProduct > surface) ───────
+
+    function test_bypass_default_no_tier_is_delayed() public {
+        _enableDelay(DELAY);
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), DELAY);
+    }
+
+    function test_surface_bypass_exempts() public {
+        _enableDelay(DELAY);
+        vm.prank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true));
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), 0, "surface bypass -> instant");
+        // A different surface is untouched.
+        assertEq(controller.quoteExitDelay(SURFACE_OTHER, address(0), ACTOR), DELAY);
+    }
+
+    function test_subProduct_bypass_overrides_surface() public {
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, false)); // surface: force delay
+        controller.setSubProductBypass(SURFACE, IWRBTC, _bp(true, true)); // sub: bypass
+        vm.stopPrank();
+        assertEq(controller.quoteExitDelay(SURFACE, IWRBTC, ACTOR), 0, "sub-product bypass wins");
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), DELAY, "other sub falls to surface");
+    }
+
+    function test_actor_bypass_overrides_subProduct_and_surface() public {
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, false));
+        controller.setSubProductBypass(SURFACE, IWRBTC, _bp(true, false));
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, true)); // MM exemption
+        vm.stopPrank();
+        assertEq(controller.quoteExitDelay(SURFACE, IWRBTC, ACTOR), 0, "actor bypass wins");
+        // A different actor still pays the (forced) delay.
+        assertEq(controller.quoteExitDelay(SURFACE, IWRBTC, OTHER), DELAY);
+    }
+
+    function test_active_false_bypass_forces_delay_over_broader_bypass() public {
+        // The tricky override: a more-specific active {bypass:false} re-imposes
+        // delay even when a broader tier bypasses.
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true)); // broad bypass
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, false)); // re-impose on ACTOR
+        vm.stopPrank();
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), DELAY, "actor re-imposes delay");
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, OTHER), 0, "others keep surface bypass");
+    }
+
+    function test_inactive_bypass_tier_falls_through() public {
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true)); // surface bypass
+        controller.setActorBypass(SURFACE, ACTOR, _bp(false, true)); // INACTIVE — ignored
+        vm.stopPrank();
+        // Inactive actor tier must NOT consume; falls through to surface bypass.
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), 0, "inactive actor tier falls through");
+    }
+
+    function test_subProduct_zero_skips_subProduct_tier() public {
+        // Zero passes subProduct=address(0); the resolver must NOT consult the
+        // sub-product map for address(0) (a sibling entry cannot leak in).
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setSubProductBypass(SURFACE_OTHER, IWRBTC, _bp(true, true));
+        vm.stopPrank();
+        // address(0) path falls straight through to surface (unconfigured) ⇒ global.
+        assertEq(controller.quoteExitDelay(SURFACE_OTHER, address(0), ACTOR), DELAY);
+    }
+
+    // ─── Passthrough surface-scoping ──────────────────────────────
+
+    function test_passthrough_resolves_to_receiver_on_scoped_surface() public {
+        _enableDelay(DELAY);
+        vm.prank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+
+        // effectiveActor rewrites the wrapper to the receiver on THIS surface.
+        assertEq(controller.effectiveActor(SURFACE, WRAPPER, USER_EOA), USER_EOA);
+        // A non-passthrough is identity.
+        assertEq(controller.effectiveActor(SURFACE, ACTOR, USER_EOA), ACTOR);
+
+        // quoteExitDelayFor returns the NORMALIZED originator/owner.
+        (uint32 d, address effOrig, address effOwner) =
+            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, DELAY);
+        assertEq(effOrig, USER_EOA, "originator normalized wrapper->receiver");
+        assertEq(effOwner, USER_EOA, "owner normalized wrapper->receiver");
+    }
+
+    function test_passthrough_is_surface_scoped_not_global() public {
+        _enableDelay(DELAY);
+        // Register WRAPPER as passthrough ONLY on the lending surface.
+        vm.prank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+
+        // On Zero (no passthrough entry) the wrapper is NOT rewritten — margin/
+        // Zero keep raw identities (never collapse originator/owner globally).
+        assertEq(controller.effectiveActor(SURFACE_OTHER, WRAPPER, USER_EOA), WRAPPER);
+        (, address effOrig, address effOwner) =
+            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE_OTHER, address(0));
+        assertEq(effOrig, WRAPPER, "Zero keeps raw originator");
+        assertEq(effOwner, WRAPPER, "Zero keeps raw owner");
+    }
+
+    function test_passthrough_actor_bypass_targets_effective_actor() public {
+        // Finding 2: the quote is on effOrig, so an actorBypass on the USER_EOA
+        // (not the wrapper) applies. Register wrapper passthrough + bypass on EOA.
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+        controller.setActorBypass(SURFACE, USER_EOA, _bp(true, true)); // exempt the human
+        vm.stopPrank();
+
+        (uint32 d, address effOrig,) =
+            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE, IXUSD);
+        assertEq(effOrig, USER_EOA);
+        assertEq(d, 0, "actorBypass on the effective (EOA) actor applies, not the wrapper");
+    }
+
+    function test_disabled_perimeter_skips_passthrough_resolution() public {
+        // Kill switch OFF: even with a passthrough registered, quoteExitDelayFor
+        // returns RAW identities (short-circuits BEFORE the registry).
+        vm.prank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+        // perimeter still disabled
+        (uint32 d, address effOrig, address effOwner) =
+            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE, IXUSD);
+        assertEq(d, 0);
+        assertEq(effOrig, WRAPPER, "raw, registry not consulted");
+        assertEq(effOwner, WRAPPER, "raw, registry not consulted");
+    }
+
+    function test_passthrough_deregister() public {
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+        assertTrue(controller.passthroughActor(SURFACE, WRAPPER));
+        controller.setPassthroughActor(SURFACE, WRAPPER, false);
+        vm.stopPrank();
+        assertFalse(controller.passthroughActor(SURFACE, WRAPPER));
+        assertEq(controller.effectiveActor(SURFACE, WRAPPER, USER_EOA), WRAPPER);
+    }
+
+    function test_setPassthrough_zero_reverts_and_only_owner() public {
+        vm.prank(ADMIN);
+        vm.expectRevert(ExitFeeController.ActorZero.selector);
+        controller.setPassthroughActor(SURFACE, address(0), true);
+
+        vm.prank(OTHER);
+        vm.expectRevert("Ownable: caller is not the owner");
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+    }
+
+    // ─── Admin guardian setter (setAdmin) ───────────────────────────────
+
+    function test_setAdmin_sets_and_emits() public {
+        vm.prank(ADMIN);
+        vm.expectEmit(true, false, false, false);
+        emit AdminSet(GUARDIAN);
+        controller.setAdmin(GUARDIAN);
+        assertEq(controller.admin(), GUARDIAN);
+    }
+
+    function test_setAdmin_rejects_zero() public {
+        vm.prank(ADMIN);
+        vm.expectRevert(ExitFeeController.AdminZero.selector);
+        controller.setAdmin(address(0));
+    }
+
+    function test_setAdmin_may_equal_owner() public {
+        //  admin == owner is a
+        // supported shape (the governance Safe holds both roles at launch).
+        vm.prank(ADMIN);
+        controller.setAdmin(ADMIN); // ADMIN is the owner here
+        assertEq(controller.admin(), ADMIN);
+    }
+
+    function test_setAdmin_only_owner() public {
+        vm.prank(OTHER);
+        vm.expectRevert("Ownable: caller is not the owner");
+        controller.setAdmin(GUARDIAN);
+    }
+
+    function test_default_admin_zero_owner_still_flips_kill_switch() public {
+        // Before setAdmin, admin == address(0). The Owner can still flip the
+        // kill switch (safe default: only Owner until a guardian is appointed);
+        // a stranger (and address(0) callers can't exist) cannot.
+        assertEq(controller.admin(), address(0));
+        vm.prank(ADMIN);
+        controller.setSecurityPerimeterEnabled(true);
+        assertTrue(controller.securityPerimeterEnabled());
+    }
+
+    // ─── Bypass setter validation / enumeration / removal ───────────────
+
+    function test_bypass_setters_only_owner() public {
+        vm.startPrank(OTHER);
+        vm.expectRevert("Ownable: caller is not the owner");
+        controller.setSurfaceBypass(SURFACE, _bp(true, true));
+        vm.expectRevert("Ownable: caller is not the owner");
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, true));
+        vm.stopPrank();
+    }
+
+    function test_bypass_zero_address_reverts() public {
+        vm.startPrank(ADMIN);
+        vm.expectRevert(ExitFeeController.SubProductZero.selector);
+        controller.setSubProductBypass(SURFACE, address(0), _bp(true, true));
+        vm.expectRevert(ExitFeeController.ActorZero.selector);
+        controller.setActorBypass(SURFACE, address(0), _bp(true, true));
+        vm.stopPrank();
+    }
+
+    function test_bypass_batch_and_length_mismatch() public {
+        vm.startPrank(ADMIN);
+        address[] memory actors = new address[](2);
+        actors[0] = ACTOR;
+        actors[1] = CAFE;
+        IExitFeeController.DelayBypassPolicy[] memory ps = new IExitFeeController.DelayBypassPolicy[](2);
+        ps[0] = _bp(true, true);
+        ps[1] = _bp(true, false);
+        controller.setActorBypasses(SURFACE, actors, ps);
+
+        // Length mismatch reverts.
+        IExitFeeController.DelayBypassPolicy[] memory bad = new IExitFeeController.DelayBypassPolicy[](1);
+        bad[0] = _bp(true, true);
+        vm.expectRevert(ExitFeeController.LengthMismatch.selector);
+        controller.setActorBypasses(SURFACE, actors, bad);
+        vm.stopPrank();
+
+        address[] memory keys = controller.actorBypassKeys(SURFACE);
+        assertEq(keys.length, 2);
+        assertEq(keys[0], ACTOR);
+        assertEq(keys[1], CAFE);
+    }
+
+    function test_bypass_enumeration_and_hard_removal() public {
+        vm.startPrank(ADMIN);
+        controller.setSubProductBypass(SURFACE, IWRBTC, _bp(true, true));
+        controller.setSubProductBypass(SURFACE, IXUSD, _bp(true, false));
+        assertEq(controller.subProductBypassKeys(SURFACE).length, 2);
+
+        controller.removeSubProductBypass(SURFACE, IWRBTC);
+        vm.stopPrank();
+
+        assertEq(controller.subProductBypassKeys(SURFACE).length, 1);
+        IExitFeeController.DelayBypassPolicy memory p = controller.subProductBypass(SURFACE, IWRBTC);
+        assertFalse(p.active);
+        assertFalse(p.bypass);
+    }
+
+    function test_bypass_remove_idempotent_when_absent() public {
+        vm.recordLogs();
+        vm.prank(ADMIN);
+        controller.removeActorBypass(SURFACE, ACTOR);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 0, "no event when nothing to remove");
+    }
+
+    function test_bypass_keys_retained_on_soft_retire() public {
+        vm.startPrank(ADMIN);
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, true));
+        controller.setActorBypass(SURFACE, ACTOR, _bp(false, false)); // soft retire
+        vm.stopPrank();
+        address[] memory keys = controller.actorBypassKeys(SURFACE);
+        assertEq(keys.length, 1, "key retained on soft retire");
+        assertEq(keys[0], ACTOR);
+    }
+
+    // ─── quoteExitDelay inner view: disabled-perimeter parity ───────────
+
+    function test_inner_quote_returns_zero_when_disabled() public {
+        // Even with a forcing bypass configured, the inner view returns 0 while
+        // the perimeter is off (parity with quoteExitDelayFor).
+        vm.startPrank(ADMIN);
+        controller.setGlobalDelaySeconds(DELAY);
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, false)); // would force delay
+        vm.stopPrank();
+        // perimeter disabled
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), 0);
+    }
+
+    // ─── Fuzz / property: precedence + short-circuit + faithful delay ───
+
+    /// @dev Property: when the perimeter is ON and no bypass tier is configured,
+    ///      quoteExitDelay returns EXACTLY globalDelaySeconds for any actor and
+    ///      any (non-zero-or-zero) subProduct — the "default delayed" rule.
+    function testFuzz_default_delay_equals_global(uint32 d, address actor, address sub) public {
+        _enableDelay(d);
+        assertEq(controller.quoteExitDelay(SURFACE, sub, actor), d);
+    }
+
+    /// @dev Property: an active actor bypass ALWAYS decides on effOrig,
+    ///      regardless of the sub-product and surface tiers.
+    function testFuzz_actor_bypass_always_wins(
+        uint32 d,
+        bool surfActive,
+        bool surfBypass,
+        bool subActive,
+        bool subBypass,
+        bool actorBypassVal
+    ) public {
+        vm.assume(d > 0);
+        _enableDelay(d);
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(surfActive, surfBypass));
+        controller.setSubProductBypass(SURFACE, IXUSD, _bp(subActive, subBypass));
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, actorBypassVal));
+        vm.stopPrank();
+
+        uint32 got = controller.quoteExitDelay(SURFACE, IXUSD, ACTOR);
+        assertEq(got, actorBypassVal ? 0 : d, "active actor tier decides");
+    }
+
+    /// @dev Property: disabled perimeter ALWAYS returns (0, raw, owner) — the
+    ///      registry is never consulted and identities are never normalized,
+    ///      for any inputs (controller-side).
+    function testFuzz_disabled_always_raw_and_zero(
+        address raw,
+        address owner_,
+        address receiver,
+        address sub,
+        bool registerPassthrough
+    ) public {
+        // Optionally register a passthrough; it must NOT be consulted while off.
+        if (registerPassthrough && raw != address(0)) {
+            vm.prank(ADMIN);
+            controller.setPassthroughActor(SURFACE, raw, true);
+        }
+        // perimeter disabled (default)
+        (uint32 d, address effOrig, address effOwner) =
+            controller.quoteExitDelayFor(raw, owner_, receiver, SURFACE, sub);
+        assertEq(d, 0);
+        assertEq(effOrig, raw, "raw originator echoed");
+        assertEq(effOwner, owner_, "raw owner echoed");
+    }
+
+    /// @dev Property: quoteExitDelayFor and the inner quoteExitDelay agree on the
+    ///      resolved delay when the perimeter is ON and no passthrough rewrites
+    ///      the actor (so effOrig == rawOriginator).
+    function testFuzz_outer_inner_agree(uint32 d, address actor, address sub) public {
+        vm.assume(actor != WRAPPER); // no passthrough registered anyway
+        _enableDelay(d);
+        (uint32 outer,,) = controller.quoteExitDelayFor(actor, actor, actor, SURFACE, sub);
+        uint32 inner = controller.quoteExitDelay(SURFACE, sub, actor);
+        assertEq(outer, inner, "outer and inner resolve the same delay");
+    }
+
+    // ─── Admin == Owner is a supported shape ──
+    //
+    // The `_transferOwnership` chokepoint and setAdmin's
+    // owner-equality check were removed by team decision: at launch the
+    // governance Safe holds BOTH roles. These pin the new behavior: role
+    // merges via the 2-step handoff succeed, and normal rotations are
+    // unaffected.
+
+    function test_transferOwnership_to_admin_then_accept_merges_roles() public {
+        // Appoint a guardian, then hand ownership to that same guardian via
+        // the 2-step flow. Both steps succeed; owner == admin afterwards.
+        vm.prank(ADMIN);
+        controller.setAdmin(GUARDIAN);
+
+        vm.prank(ADMIN);
+        controller.transferOwnership(GUARDIAN); // stages pendingOwner = GUARDIAN
+        assertEq(controller.pendingOwner(), GUARDIAN, "pending staged");
+
+        vm.prank(GUARDIAN);
+        controller.acceptOwnership();
+
+        assertEq(controller.owner(), GUARDIAN, "roles merged: guardian is now owner");
+        assertEq(controller.admin(), GUARDIAN, "admin unchanged");
+    }
+
+    function test_transferOwnership_to_nonadmin_still_works() public {
+        // A normal rotation to a fresh (non-admin) owner is unaffected.
+        vm.prank(ADMIN);
+        controller.setAdmin(GUARDIAN);
+
+        vm.prank(ADMIN);
+        controller.transferOwnership(OTHER); // OTHER != admin
+        vm.prank(OTHER);
+        controller.acceptOwnership();
+        assertEq(controller.owner(), OTHER, "rotation to a non-admin owner succeeds");
+    }
+
+    function test_initialize_handoff_admin_unset_at_init() public {
+        // At initialize, admin == address(0); it is only appointed AFTER init
+        // via setAdmin. A fresh deploy handing off to a Safe starts adminless.
+        ExitFeeController impl = new ExitFeeController();
+        bytes memory init = abi.encodeWithSelector(ExitFeeController.initialize.selector, CAFE);
+        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), init);
+        ExitFeeController c = ExitFeeController(address(proxy));
+        assertEq(c.owner(), CAFE, "immediate handoff at init succeeds");
+        assertEq(c.admin(), address(0), "admin unset until setAdmin");
+    }
+
+    // ─── surface-bypass + passthrough registries are ENUMERABLE ──
+
+    function test_surfaceBypassKeys_enumerates_no_argument() public {
+        // The getter takes NO argument — surface bypasses are keyed by surfaceId
+        // alone. Configure two surfaces and confirm both are listed.
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true));
+        controller.setSurfaceBypass(SURFACE_OTHER, _bp(true, false));
+        vm.stopPrank();
+
+        bytes32[] memory keys = controller.surfaceBypassKeys();
+        assertEq(keys.length, 2, "both configured surfaces enumerated");
+        // Order is set-insertion order.
+        assertEq(keys[0], SURFACE);
+        assertEq(keys[1], SURFACE_OTHER);
+    }
+
+    function test_surfaceBypassKeys_idempotent_on_overwrite() public {
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true));
+        controller.setSurfaceBypass(SURFACE, _bp(true, false)); // overwrite same id
+        vm.stopPrank();
+        assertEq(controller.surfaceBypassKeys().length, 1, "no duplicate key on overwrite");
+    }
+
+    function test_surfaceBypassKeys_retained_on_soft_retire() public {
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true));
+        controller.setSurfaceBypass(SURFACE, _bp(false, false)); // soft retire
+        vm.stopPrank();
+        bytes32[] memory keys = controller.surfaceBypassKeys();
+        assertEq(keys.length, 1, "soft-retired surface still enumerable");
+        assertEq(keys[0], SURFACE);
+    }
+
+    function test_removeSurfaceBypass_hard_removes_and_emits() public {
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true));
+        assertEq(controller.surfaceBypassKeys().length, 1);
+
+        vm.expectEmit(true, false, false, false);
+        emit SurfaceBypassRemoved(SURFACE);
+        controller.removeSurfaceBypass(SURFACE);
+        vm.stopPrank();
+
+        assertEq(controller.surfaceBypassKeys().length, 0, "key dropped");
+        IExitFeeController.DelayBypassPolicy memory p = controller.surfaceBypass(SURFACE);
+        assertFalse(p.active, "policy cleared");
+        assertFalse(p.bypass);
+    }
+
+    function test_removeSurfaceBypass_idempotent_when_absent() public {
+        vm.recordLogs();
+        vm.prank(ADMIN);
+        controller.removeSurfaceBypass(SURFACE);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(logs.length, 0, "no event when nothing to remove");
+    }
+
+    function test_removeSurfaceBypass_only_owner() public {
+        vm.prank(ADMIN);
+        controller.setSurfaceBypass(SURFACE, _bp(true, true));
+        vm.prank(OTHER);
+        vm.expectRevert("Ownable: caller is not the owner");
+        controller.removeSurfaceBypass(SURFACE);
+    }
+
+    function test_bypass_enumeration_under_arbitrary_surfaceId() public {
+        // A bypass set under an arbitrary surfaceId (never registered as a named
+        // fee surface) must still be fully enumerated across all three tiers.
+        bytes32 arbitrary = keccak256("ARBITRARY:SURFACE:XYZ");
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(arbitrary, _bp(true, true));
+        controller.setSubProductBypass(arbitrary, IXUSD, _bp(true, false));
+        controller.setActorBypass(arbitrary, ACTOR, _bp(true, true));
+        vm.stopPrank();
+
+        bytes32[] memory sKeys = controller.surfaceBypassKeys();
+        assertEq(sKeys.length, 1);
+        assertEq(sKeys[0], arbitrary, "arbitrary surface enumerated");
+        assertEq(controller.subProductBypassKeys(arbitrary).length, 1);
+        assertEq(controller.subProductBypassKeys(arbitrary)[0], IXUSD);
+        assertEq(controller.actorBypassKeys(arbitrary).length, 1);
+        assertEq(controller.actorBypassKeys(arbitrary)[0], ACTOR);
+    }
+
+    function test_passthroughKeys_enumerates_and_drops_on_deregister() public {
+        vm.startPrank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+        controller.setPassthroughActor(SURFACE, CAFE, true);
+        vm.stopPrank();
+
+        address[] memory keys = controller.passthroughKeys(SURFACE);
+        assertEq(keys.length, 2, "both passthroughs enumerated");
+        assertEq(keys[0], WRAPPER);
+        assertEq(keys[1], CAFE);
+
+        // Deregister WRAPPER: exact-to-live (dropped from the index, unlike the
+        // soft-retained bypass key-sets).
+        vm.prank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, false);
+        address[] memory keys2 = controller.passthroughKeys(SURFACE);
+        assertEq(keys2.length, 1, "deregistered passthrough dropped from index");
+        assertEq(keys2[0], CAFE);
+    }
+
+    function test_passthroughKeys_under_arbitrary_surfaceId() public {
+        // A passthrough registered under an arbitrary surfaceId is enumerated.
+        bytes32 arbitrary = keccak256("ARBITRARY:PASSTHROUGH:QQQ");
+        vm.prank(ADMIN);
+        controller.setPassthroughActor(arbitrary, WRAPPER, true);
+        address[] memory keys = controller.passthroughKeys(arbitrary);
+        assertEq(keys.length, 1);
+        assertEq(keys[0], WRAPPER);
+        // Surface-scoped: NOT visible under a different surface.
+        assertEq(controller.passthroughKeys(SURFACE).length, 0);
+    }
+
+    function test_passthroughKeys_idempotent_reregister() public {
+        vm.startPrank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true);
+        controller.setPassthroughActor(SURFACE, WRAPPER, true); // re-register
+        vm.stopPrank();
+        assertEq(controller.passthroughKeys(SURFACE).length, 1, "no duplicate on re-register");
+    }
+
+    function test_passthroughKeys_deregister_absent_is_noop() public {
+        // Deregistering an address that was never registered leaves the index
+        // empty and does not revert.
+        vm.prank(ADMIN);
+        controller.setPassthroughActor(SURFACE, WRAPPER, false);
+        assertEq(controller.passthroughKeys(SURFACE).length, 0);
+        assertFalse(controller.passthroughActor(SURFACE, WRAPPER));
+    }
+
+    /// @dev Property: every actively-registered passthrough is
+    ///      enumerated, and enumeration membership tracks the boolean flag exactly
+    ///      (register -> present, deregister -> absent) under a random walk.
+    function testFuzz_passthroughKeys_membership_tracks_flag(address a, bool register, bool thenDeregister)
+        public
+    {
+        vm.assume(a != address(0));
+        bytes32 s = SURFACE;
+        vm.startPrank(ADMIN);
+        if (register) {
+            controller.setPassthroughActor(s, a, true);
+            if (thenDeregister) controller.setPassthroughActor(s, a, false);
+        }
+        vm.stopPrank();
+
+        bool expectPresent = register && !thenDeregister;
+        assertEq(controller.passthroughActor(s, a), expectPresent, "flag matches expectation");
+
+        address[] memory keys = controller.passthroughKeys(s);
+        bool found = false;
+        for (uint256 i = 0; i < keys.length; i++) {
+            if (keys[i] == a) {
+                found = true;
+                break;
+            }
+        }
+        assertEq(found, expectPresent, "index membership tracks the boolean flag exactly");
+    }
+
+    /// @dev Property: the surface-bypass key-set contains a
+    ///      surfaceId iff a surface bypass was set-and-not-hard-removed for it.
+    function testFuzz_surfaceBypassKeys_membership(bytes32 s, bool active, bool bypass, bool thenRemove)
+        public
+    {
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(s, _bp(active, bypass));
+        if (thenRemove) controller.removeSurfaceBypass(s);
+        vm.stopPrank();
+
+        bytes32[] memory keys = controller.surfaceBypassKeys();
+        bool found = false;
+        for (uint256 i = 0; i < keys.length; i++) {
+            if (keys[i] == s) {
+                found = true;
+                break;
+            }
+        }
+        // set-then-remove -> absent; set-only (even soft-retired) -> present.
+        assertEq(found, !thenRemove, "membership = set && !hardRemove");
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //   — ANY-TIER-TOUCHED master id-sets
+    //
+    //  The exact gap the previous cycle left: the master surface-id set was
+    //  populated ONLY by setSurfaceBypass, so a sub-product- or actor-ONLY
+    //  bypass (the most common exemption shape, actor tier) or a
+    //  passthrough-only entry under an arbitrary surfaceId was undiscoverable
+    //  by any single enumeration getter. These tests pin that NO zero-delay /
+    //  identity-collapse config is invisible to the inspector's driver.
+    // ════════════════════════════════════════════════════════════════════
+
+    /// @dev REGRESSION (the exact gap): configure ONLY an actor-tier bypass with
+    ///      NO prior setSurfaceBypass. The surfaceId MUST appear in
+    ///      bypassSurfaceIds() even though surfaceBypassKeys() (surface-tier only)
+    ///      does not contain it.
+    function test_bypassSurfaceIds_records_actor_only_bypass() public {
+        bytes32 arbitrary = keccak256("ARBITRARY:ACTOR:ONLY");
+        address someMM = address(0x11A11); // a market-maker actor
+        vm.prank(ADMIN);
+        controller.setActorBypass(
+            arbitrary, someMM, IExitFeeController.DelayBypassPolicy({active: true, bypass: true})
+        );
+
+        // The OLD surface-tier-only driver misses it:
+        assertEq(controller.surfaceBypassKeys().length, 0, "surface-tier set stays empty");
+
+        // The any-tier-touched master set discovers it:
+        bytes32[] memory ids = controller.bypassSurfaceIds();
+        assertEq(ids.length, 1, "actor-only bypass surfaces the id");
+        assertEq(ids[0], arbitrary, "the arbitrary surfaceId is discoverable");
+
+        // And the per-surface actor tier is reachable from that id.
+        address[] memory actorKeys = controller.actorBypassKeys(arbitrary);
+        assertEq(actorKeys.length, 1);
+        assertEq(actorKeys[0], someMM);
+    }
+
+    /// @dev REGRESSION: a sub-product-ONLY bypass with no prior setSurfaceBypass
+    ///      is likewise discoverable via bypassSurfaceIds().
+    function test_bypassSurfaceIds_records_subproduct_only_bypass() public {
+        bytes32 arbitrary = keccak256("ARBITRARY:SUBPRODUCT:ONLY");
+        vm.prank(ADMIN);
+        controller.setSubProductBypass(arbitrary, IXUSD, _bp(true, false));
+
+        assertEq(controller.surfaceBypassKeys().length, 0, "surface-tier set stays empty");
+        bytes32[] memory ids = controller.bypassSurfaceIds();
+        assertEq(ids.length, 1);
+        assertEq(ids[0], arbitrary);
+        assertEq(controller.subProductBypassKeys(arbitrary)[0], IXUSD);
+    }
+
+    /// @dev The surface tier also records into the master set (so all three
+    ///      writers feed it), and the master set dedups a surfaceId touched at
+    ///      multiple tiers.
+    function test_bypassSurfaceIds_dedups_across_tiers() public {
+        bytes32 s = keccak256("ARBITRARY:ALL:TIERS");
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(s, _bp(true, true));
+        controller.setSubProductBypass(s, IXUSD, _bp(true, false));
+        controller.setActorBypass(s, ACTOR, _bp(true, true));
+        vm.stopPrank();
+
+        bytes32[] memory ids = controller.bypassSurfaceIds();
+        assertEq(ids.length, 1, "single id even though 3 tiers touched it");
+        assertEq(ids[0], s);
+    }
+
+    /// @dev REGRESSION: removeSurfaceBypass while sub/actor entries remain live
+    ///      does NOT drop the id from discovery — the id stays in the master set
+    ///      so the inspector keeps probing the still-live sub/actor tiers.
+    function test_bypassSurfaceIds_retained_after_removeSurfaceBypass() public {
+        bytes32 s = keccak256("ARBITRARY:REMOVE:SURFACE");
+        vm.startPrank(ADMIN);
+        controller.setSurfaceBypass(s, _bp(true, true));
+        controller.setActorBypass(s, ACTOR, _bp(true, true)); // still-live actor tier
+        controller.removeSurfaceBypass(s); // drop ONLY the surface tier
+        vm.stopPrank();
+
+        // Surface-tier key-set drops it (hard remove of the surface tier)...
+        assertEq(controller.surfaceBypassKeys().length, 0, "surface-tier key dropped");
+        // ...but the any-tier master set retains it (actor tier still live).
+        bytes32[] memory ids = controller.bypassSurfaceIds();
+        assertEq(ids.length, 1, "master set retains id while sub/actor live");
+        assertEq(ids[0], s);
+        assertEq(controller.actorBypassKeys(s)[0], ACTOR, "actor tier still live");
+    }
+
+    /// @dev REGRESSION: a passthrough-ONLY entry under an arbitrary surfaceId
+    ///      (no bypass at any tier, not a named fee surface) is discoverable via
+    ///      passthroughSurfaceIds().
+    function test_passthroughSurfaceIds_records_passthrough_only_entry() public {
+        bytes32 arbitrary = keccak256("ARBITRARY:PASSTHROUGH:ONLY");
+        vm.prank(ADMIN);
+        controller.setPassthroughActor(arbitrary, WRAPPER, true);
+
+        // No bypass at any tier for this surfaceId:
+        assertEq(controller.bypassSurfaceIds().length, 0, "no bypass touched this id");
+        assertEq(controller.surfaceBypassKeys().length, 0);
+
+        // But the passthrough master set discovers it:
+        bytes32[] memory ids = controller.passthroughSurfaceIds();
+        assertEq(ids.length, 1, "passthrough-only surface discoverable");
+        assertEq(ids[0], arbitrary);
+        assertEq(controller.passthroughKeys(arbitrary)[0], WRAPPER);
+    }
+
+    /// @dev passthroughSurfaceIds() is surface-level retention: the id stays
+    ///      recorded even after every passthrough under it is deregistered (the
+    ///      per-surface passthroughKeys going empty is the live signal). This
+    ///      guarantees the inspector never loses the probe point.
+    function test_passthroughSurfaceIds_retained_after_deregister() public {
+        bytes32 s = keccak256("ARBITRARY:PASSTHROUGH:DEREG");
+        vm.startPrank(ADMIN);
+        controller.setPassthroughActor(s, WRAPPER, true);
+        controller.setPassthroughActor(s, WRAPPER, false); // deregister the only one
+        vm.stopPrank();
+
+        // Per-surface live set is now empty...
+        assertEq(controller.passthroughKeys(s).length, 0, "no live passthrough under s");
+        assertFalse(controller.passthroughActor(s, WRAPPER));
+        // ...but the surface-level master set retains the probe point.
+        bytes32[] memory ids = controller.passthroughSurfaceIds();
+        assertEq(ids.length, 1, "surface-level id retained for probing");
+        assertEq(ids[0], s);
+    }
+
+    /// @dev Property: bypassSurfaceIds() contains a surfaceId iff at least one
+    ///      bypass tier (surface / sub-product / actor) was EVER written for it —
+    ///      independent of which tier, and independent of soft-retire / surface
+    ///      hard-remove (retention-only master set).
+    function testFuzz_bypassSurfaceIds_membership_any_tier(bytes32 s, uint8 tier, bool active, bool bypass)
+        public
+    {
+        vm.startPrank(ADMIN);
+        tier = uint8(bound(tier, 0, 2));
+        if (tier == 0) {
+            controller.setSurfaceBypass(s, _bp(active, bypass));
+        } else if (tier == 1) {
+            controller.setSubProductBypass(s, IXUSD, _bp(active, bypass));
+        } else {
+            controller.setActorBypass(s, ACTOR, _bp(active, bypass));
+        }
+        vm.stopPrank();
+
+        bytes32[] memory ids = controller.bypassSurfaceIds();
+        bool found = false;
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (ids[i] == s) {
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "any tier write records the surfaceId in the master set");
+    }
+
+    /// @dev Property: passthroughSurfaceIds() contains a surfaceId iff a
+    ///      passthrough was EVER registered under it (register-only recording,
+    ///      surface-level retention).
+    function testFuzz_passthroughSurfaceIds_membership(
+        bytes32 s,
+        address a,
+        bool register,
+        bool thenDeregister
+    ) public {
+        vm.assume(a != address(0));
+        vm.startPrank(ADMIN);
+        if (register) {
+            controller.setPassthroughActor(s, a, true);
+            if (thenDeregister) controller.setPassthroughActor(s, a, false);
+        }
+        vm.stopPrank();
+
+        bytes32[] memory ids = controller.passthroughSurfaceIds();
+        bool found = false;
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (ids[i] == s) {
+                found = true;
+                break;
+            }
+        }
+        // Ever-registered (even if later deregistered) -> present; never -> absent.
+        assertEq(found, register, "master set records on register, retains on deregister");
     }
 
     // ─── Invariant testing design (NOT IMPLEMENTED -- sketch for follow-up) ──

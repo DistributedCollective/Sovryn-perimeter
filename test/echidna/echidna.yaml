@@ -1,0 +1,10 @@
+# Echidna config for EchidnaExitDelayQueue (property mode, no cheatcodes).
+# Run from the repo root:
+#   echidna . --contract EchidnaExitDelayQueue --config test/echidna/echidna.yaml \
+#     --crytic-args --foundry-compile-all
+# balanceContract funds the payable harness constructor so recordNative has
+# native balance to escrow.
+testMode: property
+testLimit: 50000
+timeout: 300
+balanceContract: 100000000000000000000000

@@ -2,18 +2,38 @@
 #
 # Cross-pragma ABI guard for the ExitFeeController interface.
 #
-# Two files declare the SAME ABI surface:
+# Two files declare the ExitFeeController ABI surface:
 #   src/interfaces/IExitFeeController.sol         (range pragma >=0.5.17 <0.9.0)
 #   src/interfaces/v0_4/IExitFeeController.sol    (0.4.26 outlier, AMM)
+#
+# ── Fee surface vs delay extension ───────────────────────────
+# The unified file carries TWO surfaces:
+#   * the FEE surface (RatePolicy / ExitFeeQuote / quoteExitFee / policy
+#     setters + views + events) — consumed under 0.5.17 (Sovryn-smart),
+#     0.6.11 (zero), 0.8.20 (this repo) AND 0.4.26 (AMM); and
+#   * the DELAY extension (securityPerimeterEnabled / globalDelaySeconds /
+#     admin / bypass tiers / passthrough registry / quoteExitDelay*),
+#     added by the Security-Perimeter delay feature.
+# The AMM (0.4.26) is DEFERRED and "swaps are never delayed" (spec), so it
+# never consumes the delay extension. The `v0_4/` outlier is therefore
+# intentionally FEE-ONLY (26 members). The guard's job is to protect the
+# fee surface the AMM actually calls — NOT to force ~20 dead delay members
+# into a 0.4.26 interface. Check 1 below is accordingly a SUBSET relation:
+# every v0_4 member MUST appear byte-for-byte in the unified ABI (fee surface
+# matches exactly across pragmas); the unified file MAY carry additional
+# (delay) members the outlier omits. A fee-side struct reorder or signature
+# drift still fails (the reordered member no longer matches its v0_4 twin).
 #
 # This script enforces equivalence on three axes that a casual
 # `forge inspect ... methodIdentifiers` diff would NOT catch:
 #
-#   1. Full ABI shape: function inputs/outputs (including struct tuples),
-#      event `indexed` flags, `stateMutability`, `anonymous`, and error
-#      signatures. A struct field reorder inside `ExitFeeQuote` would keep
-#      function selectors identical (selectors only hash inputs) but break
-#      callers decoding the returned tuple.
+#   1. Fee-surface ABI shape (SUBSET): every v0_4 member — function
+#      inputs/outputs (including struct tuples), event `indexed` flags,
+#      `stateMutability`, `anonymous`, and error signatures — must appear
+#      identically in the unified ABI. A struct field reorder inside
+#      `ExitFeeQuote` would keep function selectors identical (selectors
+#      only hash inputs) but break callers decoding the returned tuple, and
+#      it breaks the subset match here.
 #
 #   2. SkipReason enum ordinal order. The ABI encodes the enum as uint8,
 #      so `forge inspect` cannot see a reorder. Synthesized skip-reason
@@ -74,16 +94,34 @@ normalize_abi() {
            )'
 }
 
-echo "── 1) Full ABI equivalence (inputs/outputs/indexed/stateMutability) ──"
-if ! diff -u \
-        <(forge inspect "$UNIFIED_FQ" abi --json | normalize_abi) \
-        <(forge inspect "$V0_4_FQ"    abi --json | normalize_abi); then
-    echo "    error: ABIs differ — see diff above." >&2
-    echo "           Catches: function/event/error signatures, struct tuple" >&2
-    echo "           component order, indexed flags, stateMutability, anonymous." >&2
+echo "── 1) Fee-surface ABI subset (v0_4 ⊆ unified; exact match per member) ──"
+# The v0_4 outlier is the fee-only reference surface. Every one of its
+# normalized ABI members MUST appear byte-for-byte in the unified ABI. The
+# unified ABI may carry extra (delay) members the outlier omits — those are
+# NOT required in v0_4 (AMM never delays). jq computes `v0_4 − unified`
+# (set difference on normalized members): a non-empty result is a fee-surface
+# mismatch (drift or a struct reorder) and fails the gate.
+UNIFIED_ABI=$(forge inspect "$UNIFIED_FQ" abi --json | normalize_abi)
+V0_4_ABI=$(forge inspect "$V0_4_FQ" abi --json | normalize_abi)
+
+MISSING=$(jq -n \
+    --argjson u "$UNIFIED_ABI" \
+    --argjson v "$V0_4_ABI" \
+    '$v | map(select( . as $x | ($u | any(. == $x)) | not ))')
+
+if [ "$(echo "$MISSING" | jq 'length')" != "0" ]; then
+    echo "    error: v0_4 fee-surface members absent from (or divergent in) the unified ABI:" >&2
+    echo "$MISSING" | jq -r '.[] | "        \(.type) \(.name // "(anonymous)")"' >&2
+    echo "           Catches: fee function/event/error signature drift, struct tuple" >&2
+    echo "           component order, indexed flags, stateMutability, anonymous —" >&2
+    echo "           on the surface the 0.4.26 AMM actually consumes." >&2
+    echo "           (Delay-extension members legitimately live ONLY in the unified" >&2
+    echo "            file; they are NOT required in the v0_4 outlier )" >&2
     exit 1
 fi
-echo "    ok"
+V0_4_COUNT=$(echo "$V0_4_ABI" | jq 'length')
+UNIFIED_COUNT=$(echo "$UNIFIED_ABI" | jq 'length')
+echo "    ok ($V0_4_COUNT/$V0_4_COUNT v0_4 fee members matched; unified carries $UNIFIED_COUNT total)"
 
 # ─── 2) SkipReason enum ordinal equivalence ───────────────────────────────
 # The ABI shows uint8 only; `forge inspect` cannot see the enum variant order.
