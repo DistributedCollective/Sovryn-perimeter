@@ -226,7 +226,7 @@ interface IExitFeeController {
 
     // ─── Admin ────────────────────────────────────────────────────────────
 
-    /// @notice `onlyAdminOrOwner` since the core merge:
+    /// @notice `onlyAdminOrOwner`:
     ///         the fee kill switch and receiver re-point are operational
     ///         levers shared with the Admin guardian. Every other setter in
     ///         this section is Owner-only.

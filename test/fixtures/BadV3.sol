@@ -78,7 +78,6 @@ contract BadV3 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     // __gap unchanged — this fixture adds NO storage; it only reorders a struct.
     bool public securityPerimeterEnabled;
     uint32 public globalDelaySeconds;
-    uint216 private __slot271Reserved;
 
     uint256[29] private __gap;
 

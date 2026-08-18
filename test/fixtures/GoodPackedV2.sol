@@ -53,7 +53,7 @@ contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorKeys;
 
-    // slot 257 — `admin` alone, exactly as the fee release shipped it.
+    // slot 257 — `admin` alone.
     address public admin;
 
     // slots 258..270
@@ -68,21 +68,18 @@ contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable
     EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 267..268 (2 slots)
     EnumerableSet.Bytes32Set internal _passthroughSurfaceIds; // slots 269..270 (2 slots)
 
-    // slot 271 (packed: bool@0, uint32@1, uint216@5) — delay scalars, slot
-    // fully consumed so an appended field starts at the next whole slot.
+    // slot 271 (packed: bool@0, uint32@1) — the delay scalars.
     bool public securityPerimeterEnabled;
     uint32 public globalDelaySeconds;
-    uint216 private __slot271Reserved;
 
-    // Two packed uint128 fields. Both go at slot 272 (the first slot still
-    // inside __gap[29]) at offset 0 and offset 16 of the SAME slot — this is
-    // what closing slot 271 buys. The gap should shrink to __gap[28].
+    // A full-slot field at 272, then two uint128 packed into slot 273 at
+    // offset 0 and offset 16. The gap shrinks by two slots, to __gap[27].
+    uint256 public newFull;
     uint128 public newA;
     uint128 public newB;
 
-    // __gap shrinks by exactly 1 slot (one slot reclaimed for the two
-    // packed uint128 fields): 29 -> 28.
-    uint256[28] private __gap;
+    // __gap shrinks by exactly 2 slots: 29 -> 27.
+    uint256[27] private __gap;
 
     function _authorizeUpgrade(address) internal view override onlyOwner {}
 }

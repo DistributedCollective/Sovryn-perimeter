@@ -58,11 +58,9 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     //   255        _subProductKeys          mapping head (enumeration index)
     //   256        _actorKeys               mapping head (enumeration index)
     //
-    //   257        admin -- the FEE release already shipped this slot, so it
-    //              is fixed: `admin` at offset 0, alone. The delay extension
-    //              adds NOTHING beside it, even though 12 bytes are free.
+    //   257        admin (20 bytes, offset 0) -- alone; the remaining
+    //              12 bytes of the slot are intentionally unused.
     //
-    //   ── Delay extension (added inside the slots __gap reserved) ──
     //   258        _surfaceBypass           mapping head
     //   259        _subProductBypass        mapping head
     //   260        _actorBypass             mapping head
@@ -77,25 +75,18 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     //   269        _passthroughSurfaceIds._values  (Bytes32Set array head) ┐ 2 slots
     //   270        _passthroughSurfaceIds._indexes (mapping head)          ┘
     //   271        securityPerimeterEnabled (1 byte) + globalDelaySeconds
-    //              (4 bytes) + __slot271Reserved (27 bytes) -- one reclaimed
-    //              gap slot, fully consumed so later upgrades start clean.
+    //              (4 bytes) -- PACKED; 27 bytes of the slot are unused.
     //   272 .. 300 __gap[29] -- preserves the OZ-style 50-slot namespace
     //                           (50 - 21 own slots used).
     //
-    // Own slots: 6 fee (251 packed + 252..256) + 1 admin (257) + 14 delay
-    // (258..271) = 21, so __gap = 50 - 21 = 29 and the namespace still ends
-    // at 300.
-    //
-    // WHY the two delay scalars are NOT packed beside `admin`: they would fit
-    // (20 + 1 + 4 = 25 bytes), and the free bytes read as zero, which is the
-    // desired disabled-at-upgrade state. But slot 257 is NOT part of the gap
-    // the shipped fee layout reserved, and the upgrade-safety check admits new
-    // state only inside reclaimed gap slots. Spending one gap slot out of the
-    // thirty available is cheaper than relaxing that check.
+    // Own slots: 251 + 252..256 + 257 + 258..271 = 21, so __gap = 50 - 21 = 29
+    // and the namespace ends at slot 300.
     //
     // Upgrades that add storage to THIS contract MUST consume from __gap and
     // reduce its length by exactly the number of slots added. They MUST NOT
-    // reorder, insert, or change the type of any preceding slot.
+    // reorder, insert, or change the type of any preceding slot. In
+    // particular, nothing may be declared before `admin`, and nothing may be
+    // packed into the free bytes of its slot.
 
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
@@ -168,20 +159,12 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///         MAY equal the owner -- nothing requires the two authorities to
     ///         be distinct. Unset (`address(0)`) until the owner appoints one;
     ///         while unset, `onlyAdminOrOwner` admits only the owner.
-    ///
-    ///         DECLARED FIRST, ALONE IN ITS SLOT, and BEFORE any delay field:
-    ///         `admin` already exists in the deployed proxy at slot 257
-    ///         offset 0. Packing anything ahead of it would shift it within
-    ///         the slot and make the stored address unreadable. Nothing may be
-    ///         inserted above this line.
+    /// @dev    Occupies slot 257 at offset 0, alone. Its position is fixed:
+    ///         nothing may be declared before it, and nothing may be packed
+    ///         into the free bytes beside it.
     address public admin;
 
-    // ─── Delay extension storage ────────────────────────────────────────
-    //
-    // Everything below is NEW state, taken from `__gap`. `admin` above keeps
-    // the slot it already occupies in the deployed proxy, and nothing is
-    // packed into the free bytes beside it: new state starts at the first
-    // slot the deployed layout reserved as gap.
+    // ─── Delay policy state ─────────────────────────────────────────────
 
     /// @dev Surface-tier delay bypass. Key: `surfaceId`. Value:
     ///      `DelayBypassPolicy {active, bypass}`. Mirrors `_surfacePolicy`'s
@@ -261,13 +244,6 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///      loses the probe point). `passthroughSurfaceIds()` exposes it.
     EnumerableSet.Bytes32Set internal _passthroughSurfaceIds;
 
-    // The two delay scalars are declared HERE, last, rather than beside
-    // `admin`. Declared next to `admin` they would pack into the free bytes of
-    // its slot -- safe in itself, but that slot is not part of the gap the
-    // deployed layout reserved, and the upgrade-safety check (rightly) only
-    // admits new state inside reclaimed gap slots. Declared here they share
-    // one clean gap slot instead, and the check passes unmodified.
-
     /// @notice Global kill switch for the DELAY perimeter. Independent of
     ///         `exitFeeEnabled`: turning fees off does NOT disable the
     ///         perimeter, and a fee-inactive surface can still be delay-active.
@@ -284,15 +260,6 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///         cross-contract setter guard here: the controller never reads or
     ///         calls the queue.
     uint32 public globalDelaySeconds;
-
-    /// @dev Closes slot 271. Without it the slot keeps 27 free bytes, and the
-    ///      next field a future upgrade appends would pack into them — landing
-    ///      in a slot that is NOT part of the gap this release reserves, which
-    ///      the upgrade-safety check refuses. Reserving the remainder here
-    ///      costs nothing (the slot is already spent) and lets every later
-    ///      upgrade start cleanly at the next whole gap slot.
-    // aderyn-ignore-next-line(unused-state-variable)
-    uint216 private __slot271Reserved;
 
     // aderyn-ignore-next-line(unused-state-variable)
     uint256[29] private __gap;
