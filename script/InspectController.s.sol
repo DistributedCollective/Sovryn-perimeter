@@ -30,11 +30,11 @@ contract InspectController is Script {
     // aligned with docs/SURFACE_REGISTRY.md and the set that
     // 04_BootstrapController.s.sol writes.
     string[5] internal surfaceNames = [
-        "SURFACE_LENDING_LENDER_WITHDRAW",
-        "SURFACE_LENDING_BORROWER_WITHDRAW",
-        "SURFACE_ZERO_WITHDRAW_COLL",
-        "SURFACE_ZERO_CLAIM_SURPLUS",
-        "SURFACE_AMM_REMOVE_LIQUIDITY"
+        "PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW",
+        "PERIMETER_SURFACE_LENDING_BORROWER_WITHDRAW",
+        "PERIMETER_SURFACE_ZERO_WITHDRAW_COLL",
+        "PERIMETER_SURFACE_ZERO_CLAIM_SURPLUS",
+        "PERIMETER_SURFACE_AMM_REMOVE_LIQUIDITY"
     ];
 
     // EIP-1967 implementation storage slot.
@@ -79,7 +79,7 @@ contract InspectController is Script {
     }
 
     function _printSurface(ExitFeeController c, string memory name) internal view {
-        bytes32 id = keccak256(abi.encodePacked("COLFEE:", name));
+        bytes32 id = keccak256(abi.encodePacked("PERIMETER:", name));
 
         console2.log(name);
         console2.log("  id:     ", vm.toString(id));
