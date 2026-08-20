@@ -33,7 +33,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     // A `surfaceId` is an opaque `bytes32` naming an operation kind. The
     // controller stores it as-is and never inspects or decodes it -- the
     // contract is product/asset-agnostic. The off-chain naming convention
-    // is `keccak256("PERIMETER:<NAME>")`; nothing on-chain enforces or depends
+    // is `keccak256("<SURFACE_NAME>")`; nothing on-chain enforces or depends
     // on it. Adding a surface is therefore an owner-only
     // `setSurfacePolicy(newId, policy)` call -- never a contract upgrade.
 
@@ -259,7 +259,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     // ─── Admin: policy setters ──────────────────────────────────────────
     //
     // `surfaceId` is an opaque operation-kind identifier. The off-chain
-    // naming convention is `keccak256("PERIMETER:<NAME>")`; the controller
+    // naming convention is `keccak256("<SURFACE_NAME>")`; the controller
     // stores the bytes32 as-is and never inspects the name.
 
     /// @notice Configure (or update) the surface tier for `surfaceId`.
@@ -267,7 +267,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///         the whole surface is off and sub-product / actor overrides
     ///         are ignored. Overwriting is idempotent.
     /// @param  surfaceId Opaque operation-kind identifier;
-    ///         `keccak256("PERIMETER:<SURFACE_NAME>")` by convention.
+    ///         `keccak256("<SURFACE_NAME>")` by convention.
     /// @param  policy Active flag + rate in basis points (`rateBps <= MAX_BPS`).
     function setSurfacePolicy(bytes32 surfaceId, RatePolicy calldata policy) external onlyOwner {
         if (policy.rateBps > MAX_BPS) revert RateExceedsMaxBps(policy.rateBps);

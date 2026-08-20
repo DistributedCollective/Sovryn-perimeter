@@ -79,7 +79,7 @@ contract InspectController is Script {
     }
 
     function _printSurface(ExitFeeController c, string memory name) internal view {
-        bytes32 id = keccak256(abi.encodePacked("PERIMETER:", name));
+        bytes32 id = keccak256(bytes(name));
 
         console2.log(name);
         console2.log("  id:     ", vm.toString(id));

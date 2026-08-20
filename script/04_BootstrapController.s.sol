@@ -46,7 +46,7 @@ import {IExitFeeController} from "../src/interfaces/IExitFeeController.sol";
 ///       --rpc-url $RSK_RPC --broadcast --account deployer \
 ///       --sig "run(uint256)" <chainId>
 ///
-///      Surface IDs are derived as `keccak256("PERIMETER:<NAME>")` per
+///      Surface IDs are derived as `keccak256("<NAME>")` per
 ///      `docs/SURFACE_REGISTRY.md`.
 ///
 ///      ALL five registered surfaces are written here — the deploy
@@ -155,7 +155,7 @@ contract BootstrapController is Script {
     ///      whether anything is charged.
     function _setSurface(ExitFeeController c, string memory name, uint256 rateBps, bool active) internal {
         require(rateBps <= MAX_BPS, "rateBps > MAX_BPS");
-        bytes32 id = keccak256(abi.encodePacked("PERIMETER:", name));
+        bytes32 id = keccak256(bytes(name));
         c.setSurfacePolicy(id, IExitFeeController.RatePolicy({active: active, rateBps: uint16(rateBps)}));
         console2.log(
             string.concat("setSurfacePolicy ", name, active ? " (active)" : " (OFF - no consumer)"), rateBps
