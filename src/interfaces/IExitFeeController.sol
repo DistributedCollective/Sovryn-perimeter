@@ -18,15 +18,15 @@ pragma solidity >=0.5.17 <0.9.0;
 pragma experimental ABIEncoderV2;
 
 /// @title  IExitFeeController
-/// @notice Cross-pragma interface for the ExitFee (ColFee) controller. One
+/// @notice Cross-pragma interface for the ExitFee (Perimeter) controller. One
 ///         file for every consumer on 0.5.17, 0.6.11, and 0.8.20. Consumers
 ///         on 0.4.26 use the structurally-different variant in `v0_4/`,
 ///         which must stay ABI-identical to this file.
 interface IExitFeeController {
     // ─── Types ────────────────────────────────────────────────────────────
 
-    /// @notice Reason a `ColFeeSkipped` event was emitted instead of an
-    ///         `ColFeeApplied`. NONE covers honest paths (positive charge,
+    /// @notice Reason a `PerimeterSkipped` event was emitted instead of an
+    ///         `PerimeterApplied`. NONE covers honest paths (positive charge,
     ///         dust, or actor-exemption); the rest cover off-state outcomes.
     enum SkipReason {
         NONE, // Controller computed an honest quote (charge / dust / zero-rate).
