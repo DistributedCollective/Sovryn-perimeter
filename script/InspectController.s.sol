@@ -31,11 +31,11 @@ contract InspectController is Script {
     // aligned with the registered surface names and the set that
     // 04_BootstrapController.s.sol writes.
     string[5] internal surfaceNames = [
-        "SURFACE_LENDING_LENDER_WITHDRAW",
-        "SURFACE_LENDING_BORROWER_WITHDRAW",
-        "SURFACE_ZERO_WITHDRAW_COLL",
-        "SURFACE_ZERO_CLAIM_SURPLUS",
-        "SURFACE_AMM_REMOVE_LIQUIDITY"
+        "PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW",
+        "PERIMETER_SURFACE_LENDING_BORROWER_WITHDRAW",
+        "PERIMETER_SURFACE_ZERO_WITHDRAW_COLL",
+        "PERIMETER_SURFACE_ZERO_CLAIM_SURPLUS",
+        "PERIMETER_SURFACE_AMM_REMOVE_LIQUIDITY"
     ];
 
     // EIP-1967 implementation storage slot.
@@ -146,7 +146,7 @@ contract InspectController is Script {
 
         // Named fee surfaces first (stable ordering; keeps human rows at the top).
         for (uint256 i = 0; i < surfaceNames.length; i++) {
-            n = _pushUnique(acc, n, keccak256(abi.encodePacked("COLFEE:", surfaceNames[i])));
+            n = _pushUnique(acc, n, keccak256(bytes(surfaceNames[i])));
         }
         for (uint256 i = 0; i < bypassIds.length; i++) {
             n = _pushUnique(acc, n, bypassIds[i]);
@@ -175,7 +175,7 @@ contract InspectController is Script {
     ///      named fee surface, else the raw bytes32.
     function _labelFor(bytes32 id) internal view returns (string memory) {
         for (uint256 i = 0; i < surfaceNames.length; i++) {
-            if (id == keccak256(abi.encodePacked("COLFEE:", surfaceNames[i]))) {
+            if (id == keccak256(bytes(surfaceNames[i]))) {
                 return surfaceNames[i];
             }
         }
@@ -254,7 +254,7 @@ contract InspectController is Script {
     }
 
     function _printSurface(ExitFeeController c, string memory name) internal view {
-        bytes32 id = keccak256(abi.encodePacked("COLFEE:", name));
+        bytes32 id = keccak256(bytes(name));
 
         console2.log(name);
         console2.log("  id:     ", vm.toString(id));

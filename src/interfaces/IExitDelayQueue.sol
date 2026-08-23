@@ -45,7 +45,7 @@ interface IExitDelayQueue {
     ///         frozen at record time. Packed into 7 words.
     struct ExitRequest {
         // word 1 (128 + 64 + 64 = 256 bits):
-        uint128 amount; //    narrowed from the uint256 ColFee amount at record
+        uint128 amount; //    narrowed from the uint256 Perimeter amount at record
         uint64 createdAt; //  audit/analytics; emitted in ExitQueued
         uint64 unlockAt; //   COMPUTED by the queue = createdAt + delaySeconds
         // words 2-5:
@@ -127,6 +127,7 @@ interface IExitDelayQueue {
     error RouteInactive(bytes32 routeId);
     error RouteProvenanceMismatch(uint256 id, bytes32 routeId);
     error TopUpInfeasibleSurface(bytes32 surfaceId); // setRecoveryRoute topUpPool guard
+    error TopUpDestinationMismatch(address destination, address subProduct); // top-up must pay its own pool
     error SourceNotBlacklisted(address src); //   Leg-2 OR-predicate not satisfied
     error NotBlacklisted(address a); //           unblacklist on a non-Blacklisted address
     error NotFrozen(address a); //                unfreeze on a non-Frozen address
@@ -137,13 +138,13 @@ interface IExitDelayQueue {
     error ZeroAddress();
     error EmptyIds();
     error SweepToZero();
-    error SolvencyViolated(); //                  post-sweep balance < totalEscrowed
+    error SolvencyViolated(); //                  post-transfer balance < totalEscrowed
 
     // ─── Ingress ──────────────────────────────────────────
 
     /// @dev CALLER-SIDE NARROWING PRECONDITION. Every
     ///      `record*` takes `amount` as a **`uint128`**, deliberately NOT widened
-    ///      to `uint256`. The ColFee hook computes the user leg as a `uint256` and
+    ///      to `uint256`. The Perimeter hook computes the user leg as a `uint256` and
     ///      MUST narrow it (`uint128(userAmount)`) at the call site; that narrowing
     ///      is the caller's responsibility and MUST be preceded by the caller's own
     ///      `require(userAmount <= type(uint128).max)` (`AmountTooLarge`) so a value

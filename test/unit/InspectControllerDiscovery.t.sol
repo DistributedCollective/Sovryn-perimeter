@@ -27,7 +27,7 @@ contract InspectControllerDiscoveryTest is Test {
     address constant WRAP = address(0x323A99);
 
     // A named fee surface, and two ARBITRARY surfaces never registered as fee surfaces.
-    bytes32 constant NAMED = keccak256("COLFEE:SURFACE_LENDING_LENDER_WITHDRAW");
+    bytes32 constant NAMED = keccak256("PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW");
     bytes32 constant ARB_ACTOR = keccak256("ARBITRARY:ACTOR:ONLY");
     bytes32 constant ARB_PASS = keccak256("ARBITRARY:PASSTHROUGH:ONLY");
 

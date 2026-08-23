@@ -36,17 +36,17 @@ import {IExitFeeController} from "../src/interfaces/IExitFeeController.sol";
 ///   export EXIT_FEE_CONTROLLER_ADMIN=0x...        # final owner
 ///   export EXIT_FEE_OPERATIONAL_ADMIN=0x...       # operational admin role
 ///   export EXIT_FEE_VAULT_PROXY=0x...             # fee receiver
-///   export COLFEE_LENDING_LENDER_BPS=10
-///   export COLFEE_LENDING_BORROWER_BPS=10
-///   export COLFEE_ZERO_WITHDRAW_COLL_BPS=10
-///   export COLFEE_ZERO_CLAIM_SURPLUS_BPS=10
-///   export COLFEE_ENABLE_AT_DEPLOY=false          # mainnet: false
+///   export PERIMETER_LENDING_LENDER_BPS=10
+///   export PERIMETER_LENDING_BORROWER_BPS=10
+///   export PERIMETER_ZERO_WITHDRAW_COLL_BPS=10
+///   export PERIMETER_ZERO_CLAIM_SURPLUS_BPS=10
+///   export PERIMETER_ENABLE_AT_DEPLOY=false          # mainnet: false
 ///
 ///   forge script script/04_BootstrapController.s.sol \
 ///       --rpc-url $RSK_RPC --broadcast --account deployer \
 ///       --sig "run(uint256)" <chainId>
 ///
-///      Surface IDs are derived as `keccak256("COLFEE:<NAME>")` per
+///      Surface IDs are derived as `keccak256("<SURFACE_NAME>")` per
 ///      `docs/SURFACE_REGISTRY.md`.
 ///
 ///      ALL five registered surfaces are written here — the deploy
@@ -90,11 +90,11 @@ contract BootstrapController is Script {
         // so a forgotten value stops the deploy instead of shipping a zero.
         address vaultProxy = vm.envAddress("EXIT_FEE_VAULT_PROXY");
         require(vaultProxy != address(0), "EXIT_FEE_VAULT_PROXY must be set");
-        uint256 lenderBps = vm.envUint("COLFEE_LENDING_LENDER_BPS");
-        uint256 borrowerBps = vm.envUint("COLFEE_LENDING_BORROWER_BPS");
-        uint256 zeroBps = vm.envUint("COLFEE_ZERO_WITHDRAW_COLL_BPS");
-        uint256 surplusBps = vm.envUint("COLFEE_ZERO_CLAIM_SURPLUS_BPS");
-        bool enableNow = vm.envBool("COLFEE_ENABLE_AT_DEPLOY");
+        uint256 lenderBps = vm.envUint("PERIMETER_LENDING_LENDER_BPS");
+        uint256 borrowerBps = vm.envUint("PERIMETER_LENDING_BORROWER_BPS");
+        uint256 zeroBps = vm.envUint("PERIMETER_ZERO_WITHDRAW_COLL_BPS");
+        uint256 surplusBps = vm.envUint("PERIMETER_ZERO_CLAIM_SURPLUS_BPS");
+        bool enableNow = vm.envBool("PERIMETER_ENABLE_AT_DEPLOY");
 
         console2.log("ExitFeeController @", proxy);
         console2.log("  chainId:        ", chainId);
@@ -113,20 +113,20 @@ contract BootstrapController is Script {
         // Writing every surface leaves the deploy transaction as a complete
         // statement of intent: no surface can be silently forgotten, and
         // "absent" is never mistaken for "deliberate".
-        _setSurface(controller, "SURFACE_LENDING_LENDER_WITHDRAW", lenderBps, true);
-        _setSurface(controller, "SURFACE_LENDING_BORROWER_WITHDRAW", borrowerBps, true);
-        _setSurface(controller, "SURFACE_ZERO_WITHDRAW_COLL", zeroBps, true);
-        _setSurface(controller, "SURFACE_ZERO_CLAIM_SURPLUS", surplusBps, true);
+        _setSurface(controller, "PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW", lenderBps, true);
+        _setSurface(controller, "PERIMETER_SURFACE_LENDING_BORROWER_WITHDRAW", borrowerBps, true);
+        _setSurface(controller, "PERIMETER_SURFACE_ZERO_WITHDRAW_COLL", zeroBps, true);
+        _setSurface(controller, "PERIMETER_SURFACE_ZERO_CLAIM_SURPLUS", surplusBps, true);
         // AMM has no consumer in this release: written explicitly OFF so the
         // deploy log carries the decision rather than an absence.
-        _setSurface(controller, "SURFACE_AMM_REMOVE_LIQUIDITY", 0, false);
+        _setSurface(controller, "PERIMETER_SURFACE_AMM_REMOVE_LIQUIDITY", 0, false);
 
         // ─── 7. Global switch ────────────────────────────────────────────
         if (enableNow) {
             controller.setExitFeeEnabled(true);
             console2.log("setExitFeeEnabled: true");
         } else {
-            console2.log("setExitFeeEnabled: NOT enabled (COLFEE_ENABLE_AT_DEPLOY=false)");
+            console2.log("setExitFeeEnabled: NOT enabled (PERIMETER_ENABLE_AT_DEPLOY=false)");
         }
 
         // ─── 8. Appoint operational admin (BEFORE the handoff) ───────────
@@ -155,7 +155,7 @@ contract BootstrapController is Script {
     ///      whether anything is charged.
     function _setSurface(ExitFeeController c, string memory name, uint256 rateBps, bool active) internal {
         require(rateBps <= MAX_BPS, "rateBps > MAX_BPS");
-        bytes32 id = keccak256(abi.encodePacked("COLFEE:", name));
+        bytes32 id = keccak256(bytes(name));
         c.setSurfacePolicy(id, IExitFeeController.RatePolicy({active: active, rateBps: uint16(rateBps)}));
         console2.log(
             string.concat("setSurfacePolicy ", name, active ? " (active)" : " (OFF - no consumer)"), rateBps

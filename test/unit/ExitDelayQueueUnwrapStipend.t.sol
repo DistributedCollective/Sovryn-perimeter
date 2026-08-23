@@ -37,7 +37,7 @@ contract ExitDelayQueueUnwrapStipendTest is Test {
     address constant OWNR = address(0x0222);
     address payable constant RCVR = payable(address(0x0333));
 
-    bytes32 constant SURFACE = keccak256("COLFEE:LENDING_LENDER_WITHDRAW");
+    bytes32 constant SURFACE = keccak256("PERIMETER:LENDING_LENDER_WITHDRAW");
     address constant SUBPRODUCT = address(0xB00C);
     uint32 constant MIN_DELAY = 1 hours;
     uint32 constant DELAY = 2 hours;

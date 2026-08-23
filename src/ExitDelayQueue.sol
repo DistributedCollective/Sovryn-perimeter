@@ -381,7 +381,7 @@ contract ExitDelayQueue is
         if (amount == 0) revert ZeroAmount();
         // AmountTooLarge: the record* ABI takes `amount` as uint128
         // deliberately (keeps ExitRequest word-1 packing). The uint256→
-        // uint128 narrowing therefore happens in the CALLER (the ColFee hook /
+        // uint128 narrowing therefore happens in the CALLER (the Perimeter hook /
         // 0.5.x product host), which MUST `require(userAmount <= type(uint128).max)
         // else AmountTooLarge` BEFORE narrowing — that check is the live
         // queue-boundary guard, in the caller's pragma, against silent truncation
@@ -409,7 +409,7 @@ contract ExitDelayQueue is
         // Write field-by-field into storage to keep the stack shallow (a struct
         // literal with 11 members + the 9-arg event blows the 0.8.20 stack
         // without via-ir; this repo pins non-via-ir to match the deployed
-        // ColFee bytecode profile).
+        // Perimeter bytecode profile).
         ExitRequest storage r = _requests[id];
         r.amount = amount;
         r.createdAt = uint64(block.timestamp);
@@ -482,6 +482,7 @@ contract ExitDelayQueue is
 
         emit ExitExecuted(requestId, receiver, token, amount);
         _payout(token, receiver, amount, unwrap);
+        _requireSolventAfterPayout(token, unwrap);
     }
 
     // ─── Stuck-exit recovery — verify-by-attempting redirect leg ──
@@ -559,6 +560,9 @@ contract ExitDelayQueue is
             _payout(token, altReceiver, amount, unwrap);
             paid = altReceiver;
         }
+        // Outside the try/catch above on purpose: a solvency failure must end
+        // the call, not be mistaken for the stored receiver bouncing.
+        _requireSolventAfterPayout(token, unwrap);
         emit ExitExecuted(id, paid, token, amount);
     }
 
@@ -797,6 +801,7 @@ contract ExitDelayQueue is
             // topUpPool routes are a plain token top-up to the pool
             // (destination == subProduct); both branches use the same primitive.
             _payout(token, route.destination, amount, false);
+            _requireSolventAfterPayout(token, false);
         }
     }
 
@@ -830,6 +835,7 @@ contract ExitDelayQueue is
 
             emit ExitResolvedBySIP(id, destination, amount);
             _payout(token, destination, amount, false);
+            _requireSolventAfterPayout(token, false);
         }
     }
 
@@ -845,6 +851,13 @@ contract ExitDelayQueue is
         if (route.topUpPool) {
             if (!_topUpFeasible[route.surfaceId]) revert TopUpInfeasibleSurface(route.surfaceId);
             if (route.token == address(0)) revert TopUpInfeasibleSurface(route.surfaceId);
+            // A top-up route means exactly one thing: restore the pool the exit
+            // came from. Without this, a route registered as `topUpPool` could
+            // name any destination, and a Leg-2 recovery would carry a blocked
+            // user's escrow there under the top-up label.
+            if (route.destination != route.subProduct) {
+                revert TopUpDestinationMismatch(route.destination, route.subProduct);
+            }
         }
         routeId = keccak256(abi.encode(route.surfaceId, route.subProduct, route.token, route.destination));
         _recoveryRoutes[routeId] = route;
@@ -944,6 +957,34 @@ contract ExitDelayQueue is
         } else {
             IERC20(token).safeTransfer(to, amount);
         }
+    }
+
+    /// @dev Every request still queued must remain fully backed after value
+    ///      leaves. A successful `safeTransfer` proves only that the token did
+    ///      not revert: a token that charges the SENDER on transfer — including
+    ///      an upgradeable one that only starts doing so after funds are
+    ///      escrowed — moves more than `amount` out while `_totalEscrowed` drops
+    ///      by exactly `amount`, leaving later exits short. `sweepSurplus`
+    ///      already enforces this after its own transfer; the payout paths are
+    ///      the other way value leaves, and must hold the same invariant.
+    ///
+    ///      Asserted by the CALLER, after the payout, and never inside `_payout`
+    ///      itself. `recoverStuckExit` attempts the stored receiver inside a
+    ///      try/catch whose bare `catch` reads ANY revert as that receiver
+    ///      bouncing: a solvency failure raised in there would be taken for a
+    ///      bounce and redirect the funds to the caller-selected alternate
+    ///      receiver, bypassing the immutable one and hiding the alarm. Raised
+    ///      out here it cannot be caught.
+    function _requireSolvent(address token) internal view {
+        uint256 balance = token == address(0) ? address(this).balance : IERC20(token).balanceOf(address(this));
+        if (balance < _totalEscrowed[token]) revert SolvencyViolated();
+    }
+
+    /// @dev Solvency for whichever balances a payout of `token` could move. The
+    ///      unwrap path spends WRBTC and sends native, so it touches both.
+    function _requireSolventAfterPayout(address token, bool unwrap) internal view {
+        _requireSolvent(token);
+        if (unwrap && token != address(0)) _requireSolvent(address(0));
     }
 
     // ─── Active-index maintenance ───────────────────────────────────────

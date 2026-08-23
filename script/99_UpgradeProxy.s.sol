@@ -6,7 +6,7 @@ import {console2} from "forge-std/console2.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 /// @title  Upgrade a UUPS proxy
-/// @notice Generic upgrade script for the ColFee proxies. Takes the proxy
+/// @notice Generic upgrade script for the Perimeter proxies. Takes the proxy
 ///         address and the new implementation address from env, calls
 ///         `upgradeTo(newImpl)`, and emits the impl pointer change to the
 ///         broadcast log.

@@ -37,6 +37,52 @@ contract FeeOnTransferERC20 is ERC20 {
 
 /// @dev Minimal WRBTC: mints on deposit-equivalent, burns + sends native on
 ///      withdraw (unwrap path).
+/// @dev A token that behaves normally until `setBurnOnTransfer` is flipped, then
+///      burns an extra wei from the SENDER on every transfer. Models an
+///      upgradeable token that becomes fee-on-transfer AFTER funds are escrowed
+///      — the ingress receipt-proof cannot catch that, only the payout can.
+contract SwitchableFeeERC20 is ERC20 {
+    bool public burnOnTransfer;
+
+    constructor() ERC20("Switchable", "SW") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setBurnOnTransfer(bool on) external {
+        burnOnTransfer = on;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal override {
+        super._transfer(from, to, value);
+        if (burnOnTransfer) _burn(from, 1);
+    }
+}
+
+/// @dev Charges the SENDER an extra wei, but only when paying one particular
+///      recipient. Models the case that separates a solvency failure from a
+///      bouncing receiver: the stored-receiver payout leaves the queue short
+///      while the alternate-receiver payout would not.
+contract RecipientBiasedFeeERC20 is ERC20 {
+    address public taxedRecipient;
+
+    constructor() ERC20("Biased", "BIAS") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function setTaxedRecipient(address r) external {
+        taxedRecipient = r;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal override {
+        super._transfer(from, to, value);
+        if (to == taxedRecipient && taxedRecipient != address(0)) _burn(from, 1);
+    }
+}
+
 contract MockWRBTC is ERC20 {
     constructor() ERC20("Wrapped RBTC", "WRBTC") {}
 
@@ -251,8 +297,8 @@ contract ExitDelayQueueTest is Test {
     address constant OWNR = address(0x0222);
     address constant RCVR = address(0x0333);
 
-    bytes32 constant SURFACE = keccak256("COLFEE:LENDING_LENDER_WITHDRAW");
-    bytes32 constant SURFACE_ZERO = keccak256("COLFEE:ZERO_WITHDRAW_COLL");
+    bytes32 constant SURFACE = keccak256("PERIMETER:LENDING_LENDER_WITHDRAW");
+    bytes32 constant SURFACE_ZERO = keccak256("PERIMETER:ZERO_WITHDRAW_COLL");
     address constant SUBPRODUCT = address(0xB00C);
 
     uint32 constant MIN_DELAY = 1 hours;
@@ -867,6 +913,101 @@ contract ExitDelayQueueTest is Test {
         vm.prank(OWNER);
         vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.TopUpInfeasibleSurface.selector, SURFACE));
         queue.setRecoveryRoute(route);
+    }
+
+    /// @dev A top-up route means "restore the pool this exit came from". The
+    ///      struct documented that; registration did not check it, so a route
+    ///      could be registered as a top-up while paying somewhere else, and a
+    ///      Leg-2 recovery would carry a blocked user's escrow there under the
+    ///      top-up label.
+    function test_setRecoveryRoute_topup_requires_destination_is_the_pool() public {
+        vm.prank(OWNER);
+        queue.setTopUpFeasible(SURFACE, true);
+        address elsewhere = address(0xDE57);
+        IExitDelayQueue.RecoveryRoute memory route = IExitDelayQueue.RecoveryRoute({
+            active: true,
+            surfaceId: SURFACE,
+            subProduct: SUBPRODUCT,
+            token: address(token),
+            destination: elsewhere,
+            topUpPool: true
+        });
+        vm.prank(OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(IExitDelayQueue.TopUpDestinationMismatch.selector, elsewhere, SUBPRODUCT)
+        );
+        queue.setRecoveryRoute(route);
+    }
+
+    /// @dev The same route with the destination bound to its own pool is fine —
+    ///      proving the guard rejects the mismatch, not top-ups as such.
+    function test_setRecoveryRoute_topup_accepts_its_own_pool() public {
+        vm.prank(OWNER);
+        queue.setTopUpFeasible(SURFACE, true);
+        IExitDelayQueue.RecoveryRoute memory route = IExitDelayQueue.RecoveryRoute({
+            active: true,
+            surfaceId: SURFACE,
+            subProduct: SUBPRODUCT,
+            token: address(token),
+            destination: SUBPRODUCT,
+            topUpPool: true
+        });
+        vm.prank(OWNER);
+        queue.setRecoveryRoute(route);
+    }
+
+    /// @dev A successful `safeTransfer` proves only that the token did not
+    ///      revert. A token that charges the SENDER on transfer moves more than
+    ///      `amount` out while `_totalEscrowed` drops by exactly `amount`,
+    ///      leaving every remaining request short. The escrow is created with a
+    ///      well-behaved token and the fee is switched on afterwards, which is
+    ///      what an upgradeable token can really do.
+    function test_executeExit_reverts_when_a_payout_would_leave_the_queue_short() public {
+        SwitchableFeeERC20 sneaky = new SwitchableFeeERC20();
+        sneaky.mint(address(source), 100 ether);
+
+        vm.prank(OWNER);
+        queue.addAllowedSource(address(source));
+        uint256 id =
+            source.recordERC20(address(sneaky), 10 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR, false);
+
+        // A second escrow so there is somebody left to shortchange.
+        source.recordERC20(address(sneaky), 10 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR, false);
+
+        sneaky.setBurnOnTransfer(true);
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(ORIG);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.executeExit(id);
+    }
+
+    /// @dev `recoverStuckExit` attempts the stored receiver inside a try/catch
+    ///      whose bare `catch` reads ANY revert as that receiver bouncing. A
+    ///      solvency failure raised inside the payout would therefore be taken
+    ///      for a bounce and redirect the funds to the CALLER-SELECTED alternate
+    ///      receiver — bypassing the immutable receiver and hiding the alarm.
+    ///      The check belongs outside that frame, and this pins it there.
+    function test_recoverStuckExit_does_not_redirect_on_a_solvency_failure() public {
+        RecipientBiasedFeeERC20 biased = new RecipientBiasedFeeERC20();
+        biased.mint(address(source), 100 ether);
+        vm.prank(OWNER);
+        queue.addAllowedSource(address(source));
+
+        uint256 id =
+            source.recordERC20(address(biased), 10 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR, false);
+        // A second escrow, so there is somebody left to be shortchanged.
+        source.recordERC20(address(biased), 10 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR, false);
+
+        // Only the stored receiver is taxed; the alternate one is not.
+        address alt = address(0xA17E);
+        biased.setTaxedRecipient(RCVR);
+
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(ORIG);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.recoverStuckExit(id, alt);
+
+        assertEq(biased.balanceOf(alt), 0, "funds were redirected to the caller's address");
     }
 
     function test_resolveToProtocol_only_admin_or_owner() public {

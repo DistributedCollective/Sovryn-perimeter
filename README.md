@@ -138,18 +138,18 @@ export EXIT_FEE_VAULT_PROXY=<vault proxy from step 1>
 # Rates for the four surfaces that ship ON. All REQUIRED — a missing one reverts
 # the script rather than shipping a rate nobody chose. 0 does NOT mean "skip":
 # the surface is still written, active and free.
-export COLFEE_LENDING_LENDER_BPS=<bps>
-export COLFEE_LENDING_BORROWER_BPS=<bps>
-export COLFEE_ZERO_WITHDRAW_COLL_BPS=<bps>
-export COLFEE_ZERO_CLAIM_SURPLUS_BPS=<bps>
-# SURFACE_AMM_REMOVE_LIQUIDITY has no consumer in this release and takes no env
+export PERIMETER_LENDING_LENDER_BPS=<bps>
+export PERIMETER_LENDING_BORROWER_BPS=<bps>
+export PERIMETER_ZERO_WITHDRAW_COLL_BPS=<bps>
+export PERIMETER_ZERO_CLAIM_SURPLUS_BPS=<bps>
+# PERIMETER_SURFACE_AMM_REMOVE_LIQUIDITY has no consumer in this release and takes no env
 # var: the script writes it as (active=false, 0). Turning it on later is a single
 # setSurfacePolicy call from the owner.
 # MAINNET: keep this false. Enabling at deploy would turn the
 # system on while the deployer EOA still owns the proxies — enable via the governance
 # Safe only after the ownership handoff and the release gates in SIP-0094.
 # =true is for local/test chains only.
-export COLFEE_ENABLE_AT_DEPLOY=false
+export PERIMETER_ENABLE_AT_DEPLOY=false
 forge script script/04_BootstrapController.s.sol \
     --rpc-url $RSK_RPC --broadcast --account deployer \
     --sig "run(uint256)" <chainId>
@@ -259,17 +259,17 @@ The upgrade-safety check deliberately does **not** verify candidate-bytecode-vs-
 
 ## Home-repo integration
 
-Perimeter Fee is consumed by three product repos. Each one copies the `IExitFeeController` interface file into its own tree on a `private/colfee` branch — **no git submodule** (the file-copy approach avoids submodule-pointer churn during private-branch development and audit):
+Perimeter Fee is consumed by three product repos. Each one copies the `IExitFeeController` interface file into its own tree on a `private/perimeter` branch — **no git submodule** (the file-copy approach avoids submodule-pointer churn during private-branch development and audit):
 
 | Home repo                                  | Pragma | Interface copy                                                                                       | Hook location                                                                                       |
 | ------------------------------------------ | ------ | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `Sovryn-smart-contracts`                   | 0.5.17 | `contracts/external/colfee/IExitFeeController.sol` ← copy of `src/interfaces/IExitFeeController.sol` | lending: `LoanTokenLogicShared` · loan/margin: `ModuleCommonFunctionalities` + `LoanClosingsShared` |
+| `Sovryn-smart-contracts`                   | 0.5.17 | `contracts/external/perimeter/IExitFeeController.sol` ← copy of `src/interfaces/IExitFeeController.sol` | lending: `LoanTokenLogicShared` · loan/margin: `ModuleCommonFunctionalities` + `LoanClosingsShared` |
 | `zero-contracts`                           | 0.6.11 | same path ← copy of `src/interfaces/IExitFeeController.sol`                                          | `BorrowerOperations`                                                                                |
 | `oracle-based-amm` _(deferred to Phase 6)_ | 0.4.26 | same path ← copy of `src/interfaces/v0_4/IExitFeeController.sol`                                     | `ConverterBase`                                                                                     |
 
 The 0.5+/0.6+/0.8 range pragma on the unified interface means Sovryn-smart-contracts and zero-contracts copy the same file; only AMM needs the structurally-different `v0_4/` outlier.
 
-When the interface changes here, each home repo re-copies its respective file (with a provenance header pinning the colfee SHA) and runs `tools/check-abi-equivalence.sh` against the colfee source to confirm the v0_4 outlier still matches.
+When the interface changes here, each home repo re-copies its respective file (with a provenance header pinning the perimeter SHA) and runs `tools/check-abi-equivalence.sh` against the perimeter source to confirm the v0_4 outlier still matches.
 
 ---
 
@@ -288,7 +288,7 @@ When the interface changes here, each home repo re-copies its respective file (w
 
 **Phase 1 complete**: shared Perimeter Fee contracts (controller + vault) + interfaces + deploy/upgrade tooling. 99/99 tests passing (95 unit + 4 invariant). ABI-equivalence guard green across four compilers. The local/EOA deploy → finalize → upgrade-safety flow is smoke-tested; production Safe execution requires the Safe-aware artifact-refresh step noted above.
 
-**Next**: Phase 2 (lending hooks in `Sovryn-smart-contracts-colfee`), Phase 3 (loan/margin hooks in same repo), Phase 4 (Zero hooks in `zero-contracts-colfee`). Phase 6 (AMM) deferred until proof gates pass.
+**Next**: Phase 2 (lending hooks in `Sovryn-smart-contracts-perimeter`), Phase 3 (loan/margin hooks in same repo), Phase 4 (Zero hooks in `zero-contracts-perimeter`). Phase 6 (AMM) deferred until proof gates pass.
 
 
 ---
