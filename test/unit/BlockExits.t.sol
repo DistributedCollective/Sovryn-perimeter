@@ -6,6 +6,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {ExitDelayQueue} from "../../src/ExitDelayQueue.sol";
+import {ExitFeeController} from "../../src/ExitFeeController.sol";
 import {IExitDelayQueue} from "../../src/interfaces/IExitDelayQueue.sol";
 import {BlockExits} from "../../script/07_BlockExits.s.sol";
 
@@ -55,6 +56,10 @@ contract SourceHarness {
 contract BlockExitsHarness is BlockExits {
     function init(address q) external {
         _init(q);
+    }
+
+    function initController(address c) external {
+        _initController(c);
     }
 
     function dispatch(
@@ -260,7 +265,7 @@ contract BlockExitsTest is Test {
     function test_unknown_action_is_rejected() public {
         vm.expectRevert(
             bytes(
-                "BLOCK_ACTION must be one of: freeze, blacklist, unfreeze, unblacklist, pause, unpause, verify"
+                "BLOCK_ACTION must be one of: freeze, blacklist, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
             )
         );
         script.dispatch("halt", _addrs(ORIG), _noIds(), false, "");
@@ -301,5 +306,45 @@ contract BlockExitsTest is Test {
     function test_verify_requires_input() public {
         vm.expectRevert(bytes("set BLOCK_ACTORS or BLOCK_REQUEST_IDS"));
         script.dispatch("verify", _noAddrs(), _noIds(), false, "");
+    }
+
+    // --- controller kill switch -----------------------------------------
+
+    function _deployController() internal returns (ExitFeeController ctrl) {
+        ExitFeeController impl = new ExitFeeController();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(impl), abi.encodeWithSelector(ExitFeeController.initialize.selector, address(0))
+        );
+        ctrl = ExitFeeController(address(proxy));
+    }
+
+    function test_kill_switch_requires_the_controller_address() public {
+        vm.expectRevert(bytes("set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter"));
+        script.dispatch("disable-perimeter", _noAddrs(), _noIds(), false, "");
+    }
+
+    function test_disable_perimeter_previews_when_enabled() public {
+        ExitFeeController ctrl = _deployController();
+        ctrl.setSecurityPerimeterEnabled(true);
+        script.initController(address(ctrl));
+        // preview only - the on-chain state must be untouched afterwards
+        script.dispatch("disable-perimeter", _noAddrs(), _noIds(), false, "");
+        assertTrue(ctrl.securityPerimeterEnabled(), "preview must not change state");
+    }
+
+    function test_disable_perimeter_refuses_nothing_to_submit_silently() public {
+        ExitFeeController ctrl = _deployController();
+        script.initController(address(ctrl));
+        // already disabled: the preview reports ALREADY and emits no calldata,
+        // and state stays untouched
+        script.dispatch("disable-perimeter", _noAddrs(), _noIds(), false, "");
+        assertFalse(ctrl.securityPerimeterEnabled());
+    }
+
+    function test_enable_perimeter_previews_when_disabled() public {
+        ExitFeeController ctrl = _deployController();
+        script.initController(address(ctrl));
+        script.dispatch("enable-perimeter", _noAddrs(), _noIds(), false, "");
+        assertFalse(ctrl.securityPerimeterEnabled(), "preview must not change state");
     }
 }

@@ -5,6 +5,7 @@ import {Script} from "forge-std/Script.sol";
 import {console2} from "forge-std/console2.sol";
 
 import {ExitDelayQueue} from "../src/ExitDelayQueue.sol";
+import {ExitFeeController} from "../src/ExitFeeController.sol";
 import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 
 /// @title  Block Exits - emergency stop for queued withdrawals
@@ -50,7 +51,9 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 /// @dev Usage:
 ///
 ///   export EXIT_DELAY_QUEUE=0x...            # the queue (required)
+///   export EXIT_FEE_CONTROLLER=0x...         # controller; only the two kill-switch actions need it
 ///   export BLOCK_ACTION=freeze               # freeze|blacklist|unfreeze|unblacklist|pause|unpause|verify
+///                                            # |disable-perimeter|enable-perimeter (controller kill switch)
 ///
 ///   # exactly one of these two for freeze/blacklist; actors only for the clears:
 ///   export BLOCK_ACTORS=0xaaa,0xbbb          # addresses to block or clear
@@ -65,9 +68,14 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///   re-run with BLOCK_ACTION=verify to confirm the resulting states.
 contract BlockExits is Script {
     ExitDelayQueue internal queue;
+    ExitFeeController internal controller;
 
     function run() external {
         _init(vm.envAddress("EXIT_DELAY_QUEUE"));
+        address ctrl = vm.envOr("EXIT_FEE_CONTROLLER", address(0));
+        if (ctrl != address(0)) {
+            _initController(ctrl);
+        }
         _dispatch(
             vm.envString("BLOCK_ACTION"),
             vm.envOr("BLOCK_ACTORS", ",", new address[](0)),
@@ -79,6 +87,10 @@ contract BlockExits is Script {
 
     function _init(address q) internal {
         queue = ExitDelayQueue(payable(q));
+    }
+
+    function _initController(address c) internal {
+        controller = ExitFeeController(c);
     }
 
     /// @dev Every input is an explicit argument so the decision logic is
@@ -114,9 +126,13 @@ contract BlockExits is Script {
             _clear(false, actors, ids);
         } else if (a == keccak256("verify")) {
             _verify(actors, ids, freezeReceiver);
+        } else if (a == keccak256("disable-perimeter")) {
+            _killSwitch(false);
+        } else if (a == keccak256("enable-perimeter")) {
+            _killSwitch(true);
         } else {
             revert(
-                "BLOCK_ACTION must be one of: freeze, blacklist, unfreeze, unblacklist, pause, unpause, verify"
+                "BLOCK_ACTION must be one of: freeze, blacklist, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
             );
         }
     }
@@ -133,7 +149,40 @@ contract BlockExits is Script {
                 ? "Halts executeExit and recoverStuckExit for EVERYONE. New exits keep escrowing."
                 : "Resumes executeExit and recoverStuckExit. Per-actor blocks are unaffected."
         );
-        _emitCalldata(abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)));
+        _emitCalldata(address(queue), abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)));
+    }
+
+    // --- Controller kill switch -----------------------------------------
+
+    /// @dev The OPPOSITE lever to everything else in this script: disabling
+    ///      the perimeter makes every charged exit pay straight out - no fee,
+    ///      no delay, nothing escrows. It is a LIVENESS escape for a broken
+    ///      perimeter, not an incident response; during an attack it is the
+    ///      last thing to touch. Funds already escrowed are NOT released by
+    ///      it - they stay in the queue behind their own holds and blocks.
+    function _killSwitch(bool enabled) internal view {
+        require(
+            address(controller) != address(0),
+            "set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter"
+        );
+        console2.log("controller           :", address(controller));
+        console2.log("controller admin     :", controller.admin());
+        console2.log("controller owner     :", controller.owner());
+        bool current = controller.securityPerimeterEnabled();
+        console2.log("perimeter enabled    :", current);
+        if (current == enabled) {
+            console2.log("ALREADY in the requested state - nothing to submit.");
+            return;
+        }
+        console2.log(
+            enabled
+                ? "Re-arms the perimeter: every active surface charges and escrows again."
+                : "LIVENESS ESCAPE: every charged exit pays straight out - no fee, no delay, nothing escrows. Already-escrowed funds stay held in the queue."
+        );
+        _emitCalldata(
+            address(controller),
+            abi.encodeCall(ExitFeeController.setSecurityPerimeterEnabled, (enabled))
+        );
     }
 
     // --- Per-actor block ------------------------------------------------
@@ -206,7 +255,7 @@ contract BlockExits is Script {
         if (changing == 0) {
             console2.log("NOTE: no state changes. The call still succeeds and re-emits AccountBlocked.");
         }
-        _emitCalldata(data);
+        _emitCalldata(address(queue), data);
     }
 
     // --- Per-actor clear ------------------------------------------------
@@ -246,6 +295,7 @@ contract BlockExits is Script {
         );
 
         _emitCalldata(
+            address(queue),
             unfreezing
                 ? abi.encodeWithSignature("unfreeze(address[])", actors)
                 : abi.encodeWithSignature("unblacklist(address[])", actors)
@@ -342,9 +392,9 @@ contract BlockExits is Script {
         return keccak256(bytes(reason));
     }
 
-    function _emitCalldata(bytes memory data) internal view {
+    function _emitCalldata(address to, bytes memory data) internal view {
         console2.log("--- submit from the Admin multisig ---");
-        console2.log("to   :", address(queue));
+        console2.log("to   :", to);
         console2.log("value: 0");
         console2.log("data :", vm.toString(data));
         console2.log("");
