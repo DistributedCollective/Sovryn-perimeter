@@ -343,10 +343,19 @@ contract BlockExits is Script {
     }
 
     function _emitCalldata(bytes memory data) internal view {
-        console2.log("--- submit to the queue from the Admin Safe ---");
+        console2.log("--- submit from the Admin multisig ---");
         console2.log("to   :", address(queue));
         console2.log("value: 0");
         console2.log("data :", vm.toString(data));
+        console2.log("");
+        console2.log("Submit via the multisig's Read/Write contract tab on Blockscout:");
+        console2.log(
+            "  https://rootstock.blockscout.com/address/<ADMIN_MULTISIG>?tab=read_write_contract"
+        );
+        console2.log("  method 20. submitTransaction: destination = `to` above, value = 0,");
+        console2.log("  data = the hex above. Simulate first, then Write. Further owners");
+        console2.log("  confirm the emitted transactionId via method 4. confirmTransaction;");
+        console2.log("  the threshold confirmation executes the call in the same transaction.");
         console2.log("");
         console2.log("--- then confirm the result ---");
         console2.log("BLOCK_ACTION=verify forge script script/07_BlockExits.s.sol --rpc-url $RPC");
