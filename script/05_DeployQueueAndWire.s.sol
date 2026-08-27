@@ -31,7 +31,7 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///         BEFORE the Owner has configured the controller's admin + global delay
 ///         (steps 4–5), so `controller.admin() == 0` and `globalDelaySeconds() == 0`
 ///         at this point. A correctly-ordered first deploy would therefore ALWAYS
-///         revert if the assertions lived here (the SP2-CTRL-02-ordering bug).
+///         revert if the assertions lived here (the ordering constraint below).
 ///         Instead they live in the dedicated READ-ONLY `06_VerifyActivation.s.sol`
 ///         verify script, run LAST as the step-7 go-live gate — AFTER the Owner
 ///         has configured admin + globalDelaySeconds.
@@ -200,10 +200,9 @@ contract DeployQueueAndWire is Script {
             "05: EXIT_DELAY_QUEUE_OWNER must be set (C1: zero owner => deployer EOA holds queue authority)"
         );
         require(cfg.queueAdmin != address(0), "05: EXIT_DELAY_QUEUE_ADMIN must be set");
-        require(
-            cfg.queueAdmin != cfg.queueOwner,
-            "05: EXIT_DELAY_QUEUE_ADMIN must differ from EXIT_DELAY_QUEUE_OWNER (Admin != Owner)"
-        );
+        // No admin-vs-owner separation is enforced: the launch shape has the
+        // governance Safe holding both roles, and the authority split becomes
+        // meaningful only once ownership later moves while the admin stays put.
         require(cfg.wrbtc != address(0), "05: WRBTC_ADDRESS must be set");
 
         // C2 — a blank host must ABORT (never no-op-wire a fail-open zero-delay
@@ -219,7 +218,7 @@ contract DeployQueueAndWire is Script {
             );
         }
 
-        // (GATE4-02 / SP2-G5R2-01) A non-zero duplicate pair (both spec-named host
+        // (C2 duplicate-host guard) A non-zero duplicate pair (both spec-named host
         // vars pointing at the SAME address — a copy-paste footgun) would wire one
         // surface twice and leave the OTHER silently unwired at zero-delay. Reject
         // it. The `== address(0)` clause preserves the both-zero DEFER_HOSTS path.

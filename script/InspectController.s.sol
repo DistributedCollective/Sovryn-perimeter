@@ -182,6 +182,17 @@ contract InspectController is Script {
         return vm.toString(id);
     }
 
+    /// @dev Is `id` in the surface-bypass key index? A soft-retired surface
+    ///      entry ({false,false}) is indistinguishable from never-set by its
+    ///      policy alone; the key set is the source of truth for presence.
+    function _surfaceBypassKeyPresent(ExitFeeController c, bytes32 id) internal view returns (bool) {
+        bytes32[] memory keys = c.surfaceBypassKeys();
+        for (uint256 i = 0; i < keys.length; i++) {
+            if (keys[i] == id) return true;
+        }
+        return false;
+    }
+
     /// @dev dump every surface / sub-product / actor delay-bypass
     ///      entry, driven by the ANY-TIER-TOUCHED probe set (`bypassSurfaceIds()` ∪
     ///      `passthroughSurfaceIds()` ∪ named surfaces) so a sub-product- or
@@ -197,10 +208,14 @@ contract InspectController is Script {
             IExitFeeController.DelayBypassPolicy memory sb = c.surfaceBypass(id);
             address[] memory subBp = c.subProductBypassKeys(id);
             address[] memory actorBp = c.actorBypassKeys(id);
+            // A surface-tier entry set then soft-retired reads {false,false} but
+            // still lives in the key index; it must stay visible, since the
+            // documented way to disable-while-auditable is exactly that state.
+            bool surfaceEntryPresent = _surfaceBypassKeyPresent(c, id);
 
             // Skip a probed id that carries no bypass entry at any tier (e.g. a
-            // named fee surface or a passthrough-only surface with no bypass).
-            if (!sb.active && !sb.bypass && subBp.length == 0 && actorBp.length == 0) {
+            // named fee surface or a passthrough-only surface never given one).
+            if (!surfaceEntryPresent && subBp.length == 0 && actorBp.length == 0) {
                 continue;
             }
             anyPrinted = true;

@@ -204,7 +204,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///      so margin/Zero (no entry) keep `effOrig = raw`, `effOwner = owner`.
     ///      Co-located here (not in the escrow queue) so the hook normalizes
     ///      WITHOUT touching the queue, keeping the kill switch queue-independent
-    ///      (Finding 3).
+    ///     .
     mapping(bytes32 => mapping(address => bool)) internal _passthroughActor;
 
     /// @dev Enumeration index for the surface-scoped passthrough registry.
@@ -1068,7 +1068,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         }
 
         // Resolve the surface-scoped effective identities, then quote on
-        // effOrig, so the quote and the record share ONE identity (Finding 2).
+        // effOrig, so the quote and the record share ONE identity.
         effOrig = effectiveActor(surfaceId, rawOriginator, receiver);
         effOwner = effectiveActor(surfaceId, owner_, receiver);
         d = _resolveDelay(surfaceId, subProduct, effOrig);

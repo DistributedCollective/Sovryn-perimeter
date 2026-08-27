@@ -125,6 +125,16 @@ contract ExitFeeControllerTest is Test {
         assertEq(q.feeAmount, 0);
         assertEq(q.netAmount, 1_000_000);
         assertEq(q.reason, uint8(IExitFeeController.SkipReason.DISABLED));
+
+        // Positive control: flip only the missing gate on and the suppressed
+        // override must revive. Without this, the test would pass just as
+        // happily against a controller whose fee path was dead altogether.
+        vm.prank(ADMIN);
+        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 20}));
+        q = _quote(IWRBTC, 1_000_000);
+        assertTrue(q.active);
+        assertEq(q.rateBps, 5);
+        assertEq(q.reason, uint8(IExitFeeController.SkipReason.NONE));
     }
 
     // ─── Tier resolution: surface → subProduct → actor ──────────────────
@@ -294,6 +304,30 @@ contract ExitFeeControllerTest is Test {
         IExitFeeController.ExitFeeQuote memory q = _quote(IXUSD, huge);
         assertEq(q.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE));
         assertEq(q.netAmount, huge); // synthesized echo of gross
+    }
+
+    /// @dev Pins the guard's exact boundary in both directions: the largest
+    ///      gross that cannot overflow quotes honestly, one wei more trips
+    ///      INVALID_QUOTE. A one-sided test would pass with the comparison
+    ///      direction flipped.
+    function test_overflow_guard_exact_boundary() public {
+        vm.startPrank(ADMIN);
+        controller.setFeeReceiver(VAULT);
+        controller.setExitFeeEnabled(true);
+        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 50}));
+        vm.stopPrank();
+
+        uint256 edge = type(uint256).max / 10_000;
+
+        IExitFeeController.ExitFeeQuote memory qEdge = _quote(IXUSD, edge);
+        assertTrue(qEdge.active, "edge value must quote honestly");
+        assertEq(qEdge.feeAmount, (edge * 50) / 10_000);
+        assertEq(qEdge.netAmount, edge - qEdge.feeAmount);
+
+        IExitFeeController.ExitFeeQuote memory qOver = _quote(IXUSD, edge + 1);
+        assertFalse(qOver.active);
+        assertEq(qOver.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE));
+        assertEq(qOver.netAmount, edge + 1);
     }
 
     // ─── Admin / setter validation ───────────────────────────────────────
@@ -560,11 +594,20 @@ contract ExitFeeControllerTest is Test {
         ps[1] = IExitFeeController.RatePolicy({active: true, rateBps: 10});
         controller.setActorPolicies(SURFACE, actors, ps);
 
+        // Pre-state pin: without this, the length-0 assertion below would
+        // also hold if the batch SET had never populated the index at all.
+        assertEq(controller.actorKeys(SURFACE).length, 2);
+
         // Removing the same list back drops both keys.
         controller.removeActorPolicies(SURFACE, actors);
         vm.stopPrank();
 
         assertEq(controller.actorKeys(SURFACE).length, 0);
+        // Hard-remove clears the stored policy itself, not only the index --
+        // a resurrected key must not revive an old rate.
+        IExitFeeController.RatePolicy memory cleared = controller.actorPolicy(SURFACE, ACTOR);
+        assertFalse(cleared.active);
+        assertEq(cleared.rateBps, 0);
     }
 
     function test_remove_address_zero_reverts() public {
@@ -618,6 +661,11 @@ contract ExitFeeControllerTest is Test {
         controller.setFeeReceiver(VAULT);
         controller.setExitFeeEnabled(true);
         controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 25}));
+        // The post-256 slots are the ones an upgrade regression would hit
+        // first: admin alone in its slot, then the packed perimeter pair.
+        controller.setAdmin(GUARDIAN);
+        controller.setSecurityPerimeterEnabled(true);
+        controller.setGlobalDelaySeconds(7 days);
         vm.stopPrank();
 
         ExitFeeControllerV2Mock v2impl = new ExitFeeControllerV2Mock();
@@ -635,6 +683,9 @@ contract ExitFeeControllerTest is Test {
         IExitFeeController.RatePolicy memory sp = controller.surfacePolicy(SURFACE);
         assertTrue(sp.active);
         assertEq(sp.rateBps, 25);
+        assertEq(controller.admin(), GUARDIAN);
+        assertTrue(controller.securityPerimeterEnabled());
+        assertEq(controller.globalDelaySeconds(), 7 days);
 
         // 3) Quote still works post-upgrade with the preserved policy.
         IExitFeeController.ExitFeeQuote memory q = _quote(IXUSD, 1_000_000);
@@ -646,7 +697,7 @@ contract ExitFeeControllerTest is Test {
     function test_non_owner_cannot_upgrade() public {
         ExitFeeControllerV2Mock v2impl = new ExitFeeControllerV2Mock();
         vm.prank(OTHER);
-        vm.expectRevert(); // Ownable: caller is not the owner
+        vm.expectRevert("Ownable: caller is not the owner");
         controller.upgradeTo(address(v2impl));
     }
 

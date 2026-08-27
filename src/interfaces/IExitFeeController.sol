@@ -122,7 +122,7 @@ interface IExitFeeController {
     ///         (`effOrig`/`effOwner`) — a registered passthrough for `surfaceId`
     ///         resolves to `receiver` — quotes the delay on `effOrig`, and
     ///         returns all three so the quote and the record share ONE identity
-    ///         (Finding 2). The hook MUST ignore `effOrig`/`effOwner` and pay
+    ///        . The hook MUST ignore `effOrig`/`effOwner` and pay
     ///         direct whenever `d == 0`.
     /// @param  rawOriginator The withdrawal caller (pre-normalization).
     /// @param  owner         The position owner (iToken holder / borrower / trove).

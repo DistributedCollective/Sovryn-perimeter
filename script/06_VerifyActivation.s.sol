@@ -54,7 +54,7 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///
 ///         The assertions live HERE — NOT inside `05_DeployQueueAndWire`'s broadcast
 ///         (step 1, BEFORE config) — so the documented activation order does not
-///         self-abort (the SP2-CTRL-02-ordering fix).
+///         self-abort.
 ///
 ///         Read-only: no `vm.startBroadcast()`, no state change. verify() does NOT
 ///         mutate (roles-not-actors: setAdmin/setGlobalDelaySeconds stay Owner
@@ -105,7 +105,7 @@ contract VerifyActivation is Script {
 
         verify(controller, queue, governanceOwner, deployer, hosts, deferHosts);
 
-        // (G5R2-02) The banner is keyed off the RESOLVED FACT — whether BOTH
+        // (C2) The banner is keyed off the RESOLVED FACT — whether BOTH
         // spec-named hosts were actually C2-checked — NOT the raw VERIFY_DEFER_HOSTS
         // flag: with defer=true but both hosts present, all surfaces ARE certified
         // and the unqualified banner is correct; the qualified/warned banner is for
@@ -178,14 +178,14 @@ contract VerifyActivation is Script {
         view
         returns (address[] memory hosts)
     {
-        // (GATE4-02 / SP2-G5R2-01) A non-zero duplicate pair (both spec-named vars
+        // (C2 duplicate-host guard) A non-zero duplicate pair (both spec-named vars
         // pointing at the SAME host — a copy-paste footgun) would C2-check one
         // surface twice and leave the OTHER silently unchecked/unwired. Reject it.
         // The `== address(0)` clause preserves the both-zero EXPLICIT-defer path
         // (deferHosts==true, both hosts intentionally unset): that is not a dup.
         require(
             sovrynHost != zeroHost || sovrynHost == address(0),
-            "SP2-CTRL-02 (C1): SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)"
+            "C1: SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)"
         );
 
         bool sovrynIn = _includeHost(deferHosts, sovrynHost, "sovrynProtocol (SOVRYN_PROTOCOL_HOST)");
@@ -216,7 +216,7 @@ contract VerifyActivation is Script {
         require(
             deferHosts,
             string.concat(
-                "SP2-CTRL-02 (C1): intended host ",
+                "C1: intended host ",
                 label,
                 " == 0 -- set it, or set VERIFY_DEFER_HOSTS=true to defer explicitly"
             )
@@ -231,7 +231,7 @@ contract VerifyActivation is Script {
     ///      (`anyHostDeferred == false`). When at least one spec-named host was
     ///      ACTUALLY dropped from the checked list (a real deferral) the banner is
     ///      DOWNGRADED to the qualified/warned variant so a deferred surface is never
-    ///      implicitly certified. (G5R2-02: keyed off the resolved fact, NOT the raw
+    ///      implicitly certified. (C2: keyed off the resolved fact, NOT the raw
     ///      VERIFY_DEFER_HOSTS flag — defer=true with both hosts present certifies
     ///      everything and earns the unqualified banner.)
     /// @param anyHostDeferred  true iff fewer than the two spec-named hosts were
@@ -314,14 +314,24 @@ contract VerifyActivation is Script {
         // opt-in may legitimately produce an empty list.
         require(
             hosts.length != 0 || deferHosts,
-            "SP2-CTRL-02 (C1): empty intended-host list without VERIFY_DEFER_HOSTS=true -- refusing vacuous wiring PASS"
+            "empty intended-host list without VERIFY_DEFER_HOSTS=true -- refusing vacuous wiring PASS"
         );
-        _verifyGuardian(controller, queue); //
+        _verifyGuardian(controller, queue);
         _verifyFloor(controller, queue);
-        //
+        _verifyNotPaused(queue);
         _verifyOwnership(controller, queue, governanceOwner, deployer);
-        // C1
-        _verifyWiring(queue, hosts); // C2
+        _verifyWiring(queue, hosts);
+    }
+
+    // ── The queue must not be left paused. A paused queue keeps escrowing
+    //    ingress but blocks every executeExit/recoverStuckExit, so enabling the
+    //    perimeter against it freezes every withdrawal system-wide. A pause set
+    //    during setup drills must be cleared before go-live. ──
+    function _verifyNotPaused(ExitDelayQueue queue) internal view {
+        require(
+            !queue.securityPerimeterPaused(),
+            "queue is paused -- unpause before enabling the perimeter (step 8)"
+        );
     }
 
     // ── single guardian. "not yet configured" (admin==0) is distinct from a
@@ -377,15 +387,15 @@ contract VerifyActivation is Script {
     ) internal view {
         require(
             governanceOwner != address(0),
-            "SP2-CTRL-02 (C1 unconfigured): governance owner arg == 0 -- set EXIT_DELAY_GOVERNANCE_OWNER"
+            "C1: governance owner arg == 0 -- set EXIT_DELAY_GOVERNANCE_OWNER"
         );
         require(
             deployer != address(0),
-            "SP2-CTRL-02 (C1 unconfigured): deployer arg == 0 -- set EXIT_DELAY_DEPLOYER"
+            "C1: deployer arg == 0 -- set EXIT_DELAY_DEPLOYER"
         );
         require(
             governanceOwner != deployer,
-            "SP2-CTRL-02 (C1 unconfigured): governance owner == deployer -- they must differ"
+            "C1: governance owner == deployer -- they must differ"
         );
 
         address queueOwner = queue.owner();
@@ -394,14 +404,14 @@ contract VerifyActivation is Script {
         // still-deployer first (the silent-blank-owner footgun this gate exists for)
         require(
             queueOwner != deployer,
-            "SP2-CTRL-02 (C1): queue.owner() == deployer EOA -- ownership not handed to governance"
+            "C1: queue.owner() == deployer EOA -- ownership not handed to governance"
         );
         require(
             ctrlOwner != deployer,
-            "SP2-CTRL-02 (C1): controller.owner() == deployer EOA -- ownership not handed to governance"
+            "C1: controller.owner() == deployer EOA -- ownership not handed to governance"
         );
-        require(queueOwner == governanceOwner, "SP2-CTRL-02 (C1): queue.owner() != governance owner");
-        require(ctrlOwner == governanceOwner, "SP2-CTRL-02 (C1): controller.owner() != governance owner");
+        require(queueOwner == governanceOwner, "C1: queue.owner() != governance owner");
+        require(ctrlOwner == governanceOwner, "C1: controller.owner() != governance owner");
     }
 
     // ── C2: wiring. Every intended host must (i) point its queue pointer at THIS
@@ -415,12 +425,12 @@ contract VerifyActivation is Script {
             // (defensive: a zero host is never an intended host — _resolveHosts
             //  filters/reverts them — but guard so a caller-supplied list cannot
             //  slip a 0.)
-            require(host != address(0), "SP2-CTRL-02 (C2): intended host == 0");
+            require(host != address(0), "C2: intended host == 0");
 
             require(
                 IExitDelayQueueHost(host).exitDelayQueue() == address(queue),
                 string.concat(
-                    "SP2-CTRL-02 (C2): host ",
+                    "C2: host ",
                     vm.toString(host),
                     " not wired -- host.exitDelayQueue() != queue (fail-open zero-delay)"
                 )
@@ -428,7 +438,7 @@ contract VerifyActivation is Script {
             require(
                 queue.isAllowedSource(host),
                 string.concat(
-                    "SP2-CTRL-02 (C2): host ",
+                    "C2: host ",
                     vm.toString(host),
                     " not allowed-source -- queue.isAllowedSource(host)==false (bricked fail-closed)"
                 )

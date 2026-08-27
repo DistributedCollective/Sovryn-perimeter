@@ -190,6 +190,23 @@ contract RevertingReceiver {
     }
 }
 
+/// @dev Receiver that burns gas in an unbounded loop until it runs out. Used to
+///      show a payout attempt that consumes more than the recovery gas budget is
+///      read as a bounce, while a caller who under-funds the whole call reverts
+///      instead of redirecting.
+contract GasSinkReceiver {
+    receive() external payable {
+        uint256 i;
+        while (true) {
+            i += 1;
+            // touch storage-ish work to consume gas fast
+            assembly {
+                mstore(0x0, i)
+            }
+        }
+    }
+}
+
 /// @dev ERC20 whose transferFrom re-enters the queue's ingress. Proves
 ///      the `nonReentrant` guard on the four record* fns rejects a re-entrant
 ///      record during the token pull. The reentrant call MUST revert with the
@@ -1130,6 +1147,82 @@ contract ExitDelayQueueTest is Test {
         assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Executed));
     }
 
+    /// @notice A caller cannot force a false bounce by starving the stored-receiver
+    ///         payout: supplying less than the recovery gas budget reverts the whole
+    ///         call (InsufficientGasForRecovery) rather than redirecting to altReceiver.
+    function test_recover_reverts_when_gas_below_budget() public {
+        GasSinkReceiver sink = new GasSinkReceiver();
+        uint256 id = source.recordNative{value: 4 ether}(
+            4 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(sink)
+        );
+        vm.warp(block.timestamp + DELAY);
+
+        // Give the call less than RECOVER_PAYOUT_GAS + floor: it must revert,
+        // not swallow an out-of-gas as a bounce and pay ALT.
+        vm.prank(OWNR);
+        vm.expectRevert(ExitDelayQueue.InsufficientGasForRecovery.selector);
+        queue.recoverStuckExit{gas: 2_000_000}(id, ALT);
+
+        // Escrow untouched, request still Queued — no redirect happened.
+        assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Queued));
+        assertEq(queue.totalEscrowed(address(0)), 4 ether);
+    }
+
+    /// @notice A receiver that genuinely needs more than the gas budget IS a
+    ///         bounce: with ample total gas, the stored-receiver attempt is capped,
+    ///         caught, and altReceiver is paid — the intended stuck-exit recovery.
+    function test_recover_gas_sink_receiver_falls_through_to_alt() public {
+        GasSinkReceiver sink = new GasSinkReceiver();
+        uint256 id = source.recordNative{value: 4 ether}(
+            4 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(sink)
+        );
+        vm.warp(block.timestamp + DELAY);
+
+        uint256 altBefore = ALT.balance;
+        vm.prank(OWNR);
+        queue.recoverStuckExit(id, ALT); // ample gas from the test harness
+        assertEq(ALT.balance, altBefore + 4 ether, "alt paid when receiver exceeds budget");
+        assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Executed));
+    }
+
+    /// @notice resolveBySIP rejects a destination that would trap or swallow the
+    ///         escrow: the queue itself, WRBTC, or the escrowed token.
+    function test_resolveBySIP_rejects_trapping_destinations() public {
+        uint256 id = _queueErc20(10 ether);
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(true); // make the request resolvable
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+
+        vm.startPrank(OWNER);
+        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(queue)));
+        queue.resolveBySIP(ids, address(queue));
+        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(wrbtc)));
+        queue.resolveBySIP(ids, address(wrbtc));
+        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(token)));
+        queue.resolveBySIP(ids, address(token));
+        vm.stopPrank();
+    }
+
+    /// @notice A plain freeze on an already-blacklisted address holds the stronger
+    ///         state AND preserves the blacklist's recorded trigger — a no-evidence
+    ///         freeze must not erase why the address was blacklisted.
+    function test_freeze_on_blacklisted_preserves_trigger() public {
+        uint256 id = _queueErc20(1 ether);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        vm.startPrank(ADMIN);
+        queue.blacklistFromRequest(ids, false, keccak256("theft"));
+        uint256 triggerBefore = queue.blockTrigger(ORIG);
+        assertEq(triggerBefore, id, "blacklist recorded the request id");
+
+        // Plain freeze carries no evidence (trigger 0): must not overwrite.
+        queue.freeze(ORIG);
+        vm.stopPrank();
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Blacklisted));
+        assertEq(queue.blockTrigger(ORIG), triggerBefore, "trigger preserved through freeze");
+    }
+
     /// @notice (b) HEALTHY original receiver → recoverStuckExit pays the STORED
     ///         receiver; altReceiver is IGNORED (proves no arbitrary redirect —
     ///         a healthy exit can never be diverted, verify-by-attempting).
@@ -2062,7 +2155,7 @@ contract ExitDelayQueueTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OWNER);
-        vm.expectRevert(IExitDelayQueue.ZeroAddress.selector);
+        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(0)));
         queue.resolveBySIP(ids, address(0));
     }
 
@@ -2194,7 +2287,7 @@ contract ExitDelayQueueTest is Test {
             topUpPool: false
         });
         vm.prank(OWNER);
-        vm.expectRevert(IExitDelayQueue.ZeroAddress.selector);
+        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(0)));
         queue.setRecoveryRoute(route);
     }
 

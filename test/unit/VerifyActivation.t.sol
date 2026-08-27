@@ -213,7 +213,7 @@ contract VerifyActivationTest is Test {
         queue.acceptOwnership();
 
         vm.expectRevert(
-            bytes("SP2-CTRL-02 (C1): queue.owner() == deployer EOA -- ownership not handed to governance")
+            bytes("C1: queue.owner() == deployer EOA -- ownership not handed to governance")
         );
         _verify();
     }
@@ -234,7 +234,7 @@ contract VerifyActivationTest is Test {
 
         vm.expectRevert(
             bytes(
-                "SP2-CTRL-02 (C1): controller.owner() == deployer EOA -- ownership not handed to governance"
+                "C1: controller.owner() == deployer EOA -- ownership not handed to governance"
             )
         );
         _verify();
@@ -256,7 +256,7 @@ contract VerifyActivationTest is Test {
         vm.prank(strayOwner);
         queue.acceptOwnership();
 
-        vm.expectRevert(bytes("SP2-CTRL-02 (C1): queue.owner() != governance owner"));
+        vm.expectRevert(bytes("C1: queue.owner() != governance owner"));
         _verify();
     }
 
@@ -274,7 +274,7 @@ contract VerifyActivationTest is Test {
         vm.prank(strayOwner);
         controller.acceptOwnership();
 
-        vm.expectRevert(bytes("SP2-CTRL-02 (C1): controller.owner() != governance owner"));
+        vm.expectRevert(bytes("C1: controller.owner() != governance owner"));
         _verify();
     }
 
@@ -283,7 +283,7 @@ contract VerifyActivationTest is Test {
         _makeFullyCorrect();
         vm.expectRevert(
             bytes(
-                "SP2-CTRL-02 (C1 unconfigured): governance owner arg == 0 -- set EXIT_DELAY_GOVERNANCE_OWNER"
+                "C1: governance owner arg == 0 -- set EXIT_DELAY_GOVERNANCE_OWNER"
             )
         );
         script.verify(controller, queue, address(0), DEPLOYER, _hosts(), false);
@@ -291,14 +291,14 @@ contract VerifyActivationTest is Test {
 
     function test_verify_reverts_when_deployer_arg_zero() public {
         _makeFullyCorrect();
-        vm.expectRevert(bytes("SP2-CTRL-02 (C1 unconfigured): deployer arg == 0 -- set EXIT_DELAY_DEPLOYER"));
+        vm.expectRevert(bytes("C1: deployer arg == 0 -- set EXIT_DELAY_DEPLOYER"));
         script.verify(controller, queue, GOV_OWNER, address(0), _hosts(), false);
     }
 
     function test_verify_reverts_when_governance_owner_equals_deployer() public {
         _makeFullyCorrect();
         vm.expectRevert(
-            bytes("SP2-CTRL-02 (C1 unconfigured): governance owner == deployer -- they must differ")
+            bytes("C1: governance owner == deployer -- they must differ")
         );
         script.verify(controller, queue, GOV_OWNER, GOV_OWNER, _hosts(), false);
     }
@@ -313,7 +313,7 @@ contract VerifyActivationTest is Test {
         vm.expectRevert(
             bytes(
                 string.concat(
-                    "SP2-CTRL-02 (C2): host ",
+                    "C2: host ",
                     vm.toString(address(host)),
                     " not wired -- host.exitDelayQueue() != queue (fail-open zero-delay)"
                 )
@@ -336,7 +336,7 @@ contract VerifyActivationTest is Test {
         vm.expectRevert(
             bytes(
                 string.concat(
-                    "SP2-CTRL-02 (C2): host ",
+                    "C2: host ",
                     vm.toString(address(unregHost)),
                     " not allowed-source -- queue.isAllowedSource(host)==false (bricked fail-closed)"
                 )
@@ -350,7 +350,7 @@ contract VerifyActivationTest is Test {
         _makeFullyCorrect();
         address[] memory hs = new address[](1);
         hs[0] = address(0);
-        vm.expectRevert(bytes("SP2-CTRL-02 (C2): intended host == 0"));
+        vm.expectRevert(bytes("C2: intended host == 0"));
         script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
     }
 
@@ -377,7 +377,7 @@ contract VerifyActivationTest is Test {
     function test_resolveHosts_reverts_on_zero_sovryn_without_defer() public {
         vm.expectRevert(
             bytes(
-                "SP2-CTRL-02 (C1): intended host sovrynProtocol (SOVRYN_PROTOCOL_HOST) == 0 -- set it, or set VERIFY_DEFER_HOSTS=true to defer explicitly"
+                "C1: intended host sovrynProtocol (SOVRYN_PROTOCOL_HOST) == 0 -- set it, or set VERIFY_DEFER_HOSTS=true to defer explicitly"
             )
         );
         script.resolveHosts(false, address(0), ZERO_HOST);
@@ -387,7 +387,7 @@ contract VerifyActivationTest is Test {
     function test_resolveHosts_reverts_on_zero_zerohost_without_defer() public {
         vm.expectRevert(
             bytes(
-                "SP2-CTRL-02 (C1): intended host Zero BorrowerOperations (ZERO_BORROWER_OPERATIONS_HOST) == 0 -- set it, or set VERIFY_DEFER_HOSTS=true to defer explicitly"
+                "C1: intended host Zero BorrowerOperations (ZERO_BORROWER_OPERATIONS_HOST) == 0 -- set it, or set VERIFY_DEFER_HOSTS=true to defer explicitly"
             )
         );
         script.resolveHosts(false, SOVRYN_HOST, address(0));
@@ -399,7 +399,7 @@ contract VerifyActivationTest is Test {
     function test_resolveHosts_reverts_on_both_zero_without_defer() public {
         vm.expectRevert(
             bytes(
-                "SP2-CTRL-02 (C1): intended host sovrynProtocol (SOVRYN_PROTOCOL_HOST) == 0 -- set it, or set VERIFY_DEFER_HOSTS=true to defer explicitly"
+                "C1: intended host sovrynProtocol (SOVRYN_PROTOCOL_HOST) == 0 -- set it, or set VERIFY_DEFER_HOSTS=true to defer explicitly"
             )
         );
         script.resolveHosts(false, address(0), address(0));
@@ -433,7 +433,7 @@ contract VerifyActivationTest is Test {
     /// deferHosts (the check runs BEFORE the include/defer logic).
     function test_resolveHosts_reverts_on_duplicate_nonzero_hosts() public {
         vm.expectRevert(
-            bytes("SP2-CTRL-02 (C1): SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)")
+            bytes("C1: SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)")
         );
         script.resolveHosts(false, SOVRYN_HOST, SOVRYN_HOST);
     }
@@ -443,7 +443,7 @@ contract VerifyActivationTest is Test {
     /// copy-paste of the same real address into both slots.
     function test_resolveHosts_reverts_on_duplicate_nonzero_hosts_even_when_deferred() public {
         vm.expectRevert(
-            bytes("SP2-CTRL-02 (C1): SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)")
+            bytes("C1: SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)")
         );
         script.resolveHosts(true, ZERO_HOST, ZERO_HOST);
     }
@@ -470,7 +470,7 @@ contract VerifyActivationTest is Test {
         address[] memory empty = new address[](0);
         vm.expectRevert(
             bytes(
-                "SP2-CTRL-02 (C1): empty intended-host list without VERIFY_DEFER_HOSTS=true -- refusing vacuous wiring PASS"
+                "empty intended-host list without VERIFY_DEFER_HOSTS=true -- refusing vacuous wiring PASS"
             )
         );
         script.verify(controller, queue, GOV_OWNER, DEPLOYER, empty, false);

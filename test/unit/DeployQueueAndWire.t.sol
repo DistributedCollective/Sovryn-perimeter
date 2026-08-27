@@ -164,13 +164,11 @@ contract DeployQueueAndWireRunTest is Test {
         script.validateConfig(cfg, false);
     }
 
-    // ── (C1) Admin == Owner ABORTS (Admin != Owner separation). ──
-    function test_validateConfig_reverts_when_admin_equals_owner() public {
+    // ── Admin == Owner is the supported launch shape and must validate. ──
+    function test_validateConfig_accepts_admin_equal_to_owner() public view {
         DeployQueueAndWire.DeployConfig memory cfg = _validCfg();
         cfg.queueAdmin = cfg.queueOwner;
-        vm.expectRevert(
-            bytes("05: EXIT_DELAY_QUEUE_ADMIN must differ from EXIT_DELAY_QUEUE_OWNER (Admin != Owner)")
-        );
+        // Does not revert: the governance Safe holds both roles at launch.
         script.validateConfig(cfg, false);
     }
 

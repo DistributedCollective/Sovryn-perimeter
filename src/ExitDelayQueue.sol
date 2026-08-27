@@ -34,8 +34,9 @@ interface IWRBTC {
 ///         Two-principal authority: `Owner` (Ownable2Step) holds UUPS
 ///         upgrade + all security-critical CONFIG; `Admin` (a single stored
 ///         address, `onlyAdminOrOwner`) is the fast guardian — freeze/blacklist,
-///         pause, Leg-1 release, Leg-2 along Owner-approved routes. `Admin ≠
-///         Owner` is the one hard separation.
+///         pause, Leg-1 release, Leg-2 along Owner-approved routes. The two roles
+///         MAY be the same address; the authority split constrains the Admin only
+///         once ownership moves to a separate holder.
 //
 // The queue custodies escrowed RBTC/ERC20/WRBTC by design; the only value-in
 // path is the gated ingress (record*/receive()), and value-out is CEI-ordered
@@ -100,9 +101,9 @@ contract ExitDelayQueue is
     // (restoring the pre-marker layout, still 32).
 
     /// @notice Fast operational guardian. Not an OZ AccessControl role —
-    ///         a single stored address checked by `onlyAdminOrOwner`. MUST be
-    ///         distinct from the Owner for the authority bounds to
-    ///         hold; enforced at `initialize` and `setAdmin`.
+    ///         a single stored address checked by `onlyAdminOrOwner`. MAY equal
+    ///         the Owner; the authority bounds between the two roles bind only
+    ///         once ownership moves to a separate holder.
     address public admin;
 
     /// @notice Monotonic id source; ids are never reused. The first
@@ -187,6 +188,8 @@ contract ExitDelayQueue is
     error NotAdminOrOwner(address caller);
     error OwnershipCannotBeRenounced();
     error UpgradeImplZero();
+    error InsufficientGasForRecovery();
+    error InvalidDestination(address destination);
 
     // ─── Construction / initialization ──────────────────────────────────
 
@@ -566,14 +569,34 @@ contract ExitDelayQueue is
         emit ExitExecuted(id, paid, token, amount);
     }
 
+    /// @notice Gas budget the stored-receiver payout attempt is given, and the
+    ///         floor the caller must leave beyond it. A genuine receiver revert
+    ///         returns control with the floor intact; only a receiver that needs
+    ///         MORE than the budget is read as a bounce. Fixing the budget and
+    ///         requiring the frame to hold it means the fall-through to
+    ///         `altReceiver` cannot be reached by starving the attempt: a caller
+    ///         who supplies too little gas reverts the whole call instead of
+    ///         redirecting a healthy exit. The budget covers any realistic ERC20
+    ///         transfer or WRBTC unwrap-and-send with wide margin.
+    uint256 public constant RECOVER_PAYOUT_GAS = 3_000_000;
+    uint256 internal constant RECOVER_GAS_FLOOR = 200_000;
+
     /// @dev Catchable single-payout attempt for `recoverStuckExit`. Routes the
     ///      transfer through an EXTERNAL self-call so a reverting recipient is
     ///      caught (Solidity cannot catch a low-level revert inline) and the leg
-    ///      can fall through to `altReceiver`. Returns false on any failure.
+    ///      can fall through to `altReceiver`. Returns false on a genuine bounce.
     ///      Self-only (`msg.sender == address(this)`); NOT `nonReentrant` — it runs
     ///      inside `recoverStuckExit`'s guard, and CEI already made the state safe.
+    ///
+    ///      The explicit gas cap plus the pre-check are the guard against a false
+    ///      bounce: without a fixed budget, EIP-150's 63/64 rule lets a caller
+    ///      pick a gas limit that out-of-gases the attempt (caught here as a
+    ///      "bounce") while the retained 1/64 still completes the `altReceiver`
+    ///      payout — redirecting a healthy exit. Reserving the budget and
+    ///      reverting when the frame cannot cover it closes that path.
     function _tryPayout(address token, address to, uint128 amount, bool unwrap) internal returns (bool) {
-        try this.payoutExternal(token, to, amount, unwrap) {
+        if (gasleft() < RECOVER_PAYOUT_GAS + RECOVER_GAS_FLOOR) revert InsufficientGasForRecovery();
+        try this.payoutExternal{gas: RECOVER_PAYOUT_GAS}(token, to, amount, unwrap) {
             return true;
         } catch {
             return false;
@@ -716,9 +739,14 @@ contract ExitDelayQueue is
         // that still refreshes trigger/reason (does not downgrade).
         BlockState from = _blockState[a];
         if (to == BlockState.Frozen && from == BlockState.Blacklisted) {
-            // hold the stronger state; refresh evidence only
-            _blockTrigger[a] = triggerId;
-            emit AccountBlocked(a, from, triggerId, reasonHash);
+            // Hold the stronger state. A freeze carrying no evidence (the plain
+            // `freeze(address)` passes triggerId 0 / reason 0) must not erase the
+            // blacklist's recorded trigger and reason; only a by-request freeze
+            // that carries real evidence refreshes them.
+            if (triggerId != 0 || reasonHash != bytes32(0)) {
+                _blockTrigger[a] = triggerId;
+                emit AccountBlocked(a, from, triggerId, reasonHash);
+            }
             return;
         }
         if (from == BlockState.None) {
@@ -806,28 +834,37 @@ contract ExitDelayQueue is
     }
 
     /// @inheritdoc IExitDelayQueue
-    /// @dev Leg-3: Owner catch-all, bounded to a blocked/held/non-executable
-    ///      request — the DAO can never touch an honest, fully-unblocked,
-    ///      unlocked, in-flight exit.
+    /// @dev Leg-3: Owner catch-all, bounded to a request that is blocked, paused,
+    ///      or still inside its delay window. A request past its unlock time with
+    ///      no party blocked and the queue unpaused is out of reach here — the
+    ///      delay window is deliberately in scope, because holding a withdrawal
+    ///      until it unlocks so a detected theft can be resolved away is the whole
+    ///      point of the queue.
     function resolveBySIP(uint256[] calldata ids, address destination) external nonReentrant onlyOwner {
         if (ids.length == 0) revert EmptyIds();
-        if (destination == address(0)) revert ZeroAddress();
+        // Same destination guard as recoverStuckExit's altReceiver: never the
+        // zero address, this contract (would trap the escrow), or WRBTC (a
+        // wrapped-token destination silently swallows an unwrap payout). The
+        // per-request `destination == token` case is rejected inside the loop.
+        if (destination == address(0) || destination == address(this) || destination == wrbtc) {
+            revert InvalidDestination(destination);
+        }
         for (uint256 i = 0; i < ids.length; ++i) {
             uint256 id = ids[i];
             ExitRequest storage r = _requests[id];
             if (r.status == ExitStatus.None) revert UnknownRequest(id);
             if (r.status != ExitStatus.Queued) revert AlreadyTerminal(id);
 
-            // Bounded predicate: blocked | paused | locked. The DAO can never
-            // touch an honest, fully-unblocked, unlocked, unpaused in-flight exit.
-            // A bouncing (but unblocked) recipient is NOT admitted here — it is
-            // handled self-service via recoverStuckExit(id, altReceiver),
-            // so there is no _payoutFailed term (that mechanism was removed).
+            // Bounded predicate: blocked | paused | locked. A fully-unblocked,
+            // unlocked, unpaused request is out of reach. A bouncing (but
+            // unblocked) recipient is NOT admitted here — it is handled
+            // self-service via recoverStuckExit(id, altReceiver).
             bool resolvable = _isBlocked(r.originator) || _isBlocked(r.owner) || _isBlocked(r.receiver)
                 || securityPerimeterPaused || block.timestamp < r.unlockAt;
             if (!resolvable) revert NotResolvableBySIP(id);
 
             address token = r.token;
+            if (destination == token) revert InvalidDestination(destination);
             uint128 amount = r.amount;
             r.status = ExitStatus.ResolvedBySIP;
             _removeActive(id, r.originator, r.owner);
@@ -845,7 +882,14 @@ contract ExitDelayQueue is
 
     /// @inheritdoc IExitDelayQueue
     function setRecoveryRoute(RecoveryRoute calldata route) external onlyOwner returns (bytes32 routeId) {
-        if (route.destination == address(0)) revert ZeroAddress();
+        // Destination guard, same as the resolve legs: never the zero address,
+        // this contract (would trap escrow), the escrowed token, or WRBTC (a
+        // wrapped-token destination swallows an unwrap payout). A topUpPool route
+        // is pinned tighter still, to route.subProduct, below.
+        if (
+            route.destination == address(0) || route.destination == address(this)
+                || route.destination == route.token || route.destination == wrbtc
+        ) revert InvalidDestination(route.destination);
         // topUpPool routes restricted on-chain to feasible surfaces and
         // to non-native tokens (a native request can never be Leg-2a).
         if (route.topUpPool) {
