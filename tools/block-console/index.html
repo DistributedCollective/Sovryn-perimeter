@@ -83,6 +83,9 @@
   .b-frozen{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
   .b-black{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
   .b-clear{color:var(--faint)}
+  a{color:var(--accent)}
+  a:hover{text-decoration:none}
+  a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
 
   .empty{padding:34px 16px;text-align:center;color:var(--faint);font-size:14px}
@@ -153,6 +156,18 @@
       <button class="ghost" id="apply">Apply filter</button>
     </div>
 
+    <div class="card" id="pauseCard" hidden>
+      <b>Too much at once to cherry-pick?</b>
+      <p style="font-size:13px;color:var(--note);margin:6px 0 10px">Pausing stops every payout from the
+        vault while still letting new withdrawals escrow — the products keep working and nothing leaves.
+        Use it when the fraudulent requests cannot be picked out one by one, then resume once they can.</p>
+      <div class="bar" style="margin:0">
+        <button class="ghost" id="pauseBtn">Pause all releases</button>
+        <span class="count" id="pauseState"></span>
+      </div>
+      <div id="pauseOut"></div>
+    </div>
+
     <div class="tablewrap">
       <table>
         <thead>
@@ -185,8 +200,8 @@
       <div>
         <label for="action">Lever</label>
         <select id="action">
-          <option value="freeze">Freeze — reversible hold while you investigate</option>
-          <option value="blacklist">Blacklist — confirmed theft; unlocks recovery</option>
+          <option value="freeze">Freeze batch requests — reversible hold while you investigate</option>
+          <option value="blacklist">Blacklist batch requests — confirmed theft; unlocks recovery</option>
         </select>
       </div>
       <div>
@@ -303,6 +318,7 @@ const SEL = {
   owner:                "0x8da5cb5b",
   freezeFromRequest:    "0x9c5ec771",
   blacklistFromRequest: "0xda911e50",
+  setPaused:            "0xa920be14",
 };
 const ZERO = "0x0000000000000000000000000000000000000000";
 const ZERO32 = "0x" + "0".repeat(64);
@@ -387,6 +403,13 @@ function setStrip() {
     `<span class="pill">admin <b class="mono">${short(CTX.admin)}</b></span>` +
     `<span class="pill">owner <b class="mono">${short(CTX.owner)}</b></span>` +
     `<span class="pill">requests <b>${CTX.last}</b></span>`;
+  const card = $("pauseCard");
+  card.hidden = false;
+  $("pauseBtn").textContent = CTX.paused ? "Resume releases" : "Pause all releases";
+  $("pauseState").textContent = CTX.paused
+    ? "Every payout is currently halted. New withdrawals still escrow."
+    : "Releases are live.";
+  $("pauseOut").innerHTML = "";
 }
 
 async function loadContext() {
@@ -561,6 +584,26 @@ function generate() {
     navigator.clipboard.writeText(`destination: ${CTX.queue}\nvalue: 0\ndata: ${data}`).then(() => flash("all three copied")));
 }
 
+function generatePause() {
+  const target = !CTX.paused;
+  const data = SEL.setPaused + encUint(target ? 1 : 0);
+  $("pauseOut").innerHTML = `
+    <div class="card" style="margin-bottom:0">
+      <b>${target ? "Pause" : "Resume"} — submit this from the Admin multisig</b>
+      <dl class="kv" style="margin-top:10px">
+        <dt>destination</dt><dd>${CTX.queue}</dd>
+        <dt>value</dt><dd>0</dd>
+        <dt>method</dt><dd>setSecurityPerimeterPaused(${target})</dd>
+      </dl>
+      <label style="margin-top:12px">data</label>
+      <pre id="pcd">${data}</pre>
+      <div class="bar"><button id="pcopy">Copy calldata</button><span class="count" id="pcopied"></span></div>
+    </div>`;
+  $("pcopy").addEventListener("click", () => navigator.clipboard.writeText(data).then(() => {
+    $("pcopied").textContent = "copied"; setTimeout(() => ($("pcopied").textContent = ""), 1800);
+  }));
+}
+
 // ── Wiring ──
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach((x) => x.setAttribute("aria-selected", String(x === t)));
@@ -586,6 +629,7 @@ $("selAll").addEventListener("change", (e) => {
 });
 $("freezeRecv").addEventListener("change", renderSelection);
 $("gen").addEventListener("click", generate);
+$("pauseBtn").addEventListener("click", generatePause);
 </script>
 </body>
 </html>

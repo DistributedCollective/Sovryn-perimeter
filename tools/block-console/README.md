@@ -33,6 +33,17 @@ Reason hashes are optional and taken as a `bytes32`. Generate one with
 `cast keccak "<your reason>"` — the page deliberately ships no hashing code of its
 own rather than a hand-rolled keccak.
 
+## Where this fits
+
+The operator surface for non-technical use is the **Perimeter page on the admin
+panel** (`Sovryn-Admin-Panel`, route `/perimeter`): it is a deployed URL, connects
+a wallet, and submits to the multisig directly, so nothing has to be served or
+copied by hand.
+
+This page is the local fallback for when the panel is unavailable or the operator
+wants to point at a different RPC or a queue that is not the registered one. It
+generates the same calldata; it just hands it over instead of submitting it.
+
 ## Relationship to `script/07_BlockExits.s.sol`
 
 The Foundry script remains the no-browser path and covers the levers this page does
