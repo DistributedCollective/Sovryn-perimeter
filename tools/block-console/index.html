@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perimeter Block Console</title>
+<style>
+  :root{
+    --bg:#f3f4f1; --panel:#fcfdfb; --panel2:#eceee9; --border:#d8ddd6;
+    --ink:#1c211f; --muted:#68746f; --note:#535f5a; --faint:#96a09b;
+    --accent:#b06414; --onaccent:#fcfdfb; --good:#2e7d47; --warn:#a3641c; --bad:#a2453d;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#101314; --panel:#171b1c; --panel2:#1e2425; --border:#2a3133;
+      --ink:#edf0ee; --muted:#93a09d; --note:#aab6b1; --faint:#5f6d69;
+      --accent:#f2a03d; --onaccent:#101314; --good:#4caf6e; --warn:#d9a13a; --bad:#cf5f56;
+    }
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);margin:0;
+    font:15px/1.55 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 22px 60px}
+  .mono{font-family:ui-monospace,Menlo,monospace}
+  h1{font-size:25px;margin:2px 0 3px;letter-spacing:-.02em}
+  h2{font-size:17px;margin:26px 0 10px;letter-spacing:-.01em}
+  .eyebrow{color:var(--accent);font-family:ui-monospace,Menlo,monospace;font-size:10.5px;
+    font-weight:700;letter-spacing:.16em;text-transform:uppercase;margin-bottom:6px}
+  .sub{color:var(--muted);margin:0 0 16px;max-width:74ch;font-size:14px}
+  header{border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:18px}
+
+  /* connection bar */
+  .conn{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;
+    background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:13px 15px}
+  @media (max-width:820px){.conn{grid-template-columns:1fr}}
+  label{display:block;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--faint);font-family:ui-monospace,Menlo,monospace;margin-bottom:5px}
+  input[type=text]{width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--border);
+    border-radius:8px;padding:8px 11px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+  input[type=text]:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:transparent}
+  button{background:var(--accent);color:var(--onaccent);border:0;border-radius:8px;
+    padding:9px 16px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap}
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--border)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* status strip */
+  .strip{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 0}
+  .pill{border:1px solid var(--border);border-radius:99px;padding:4px 12px;background:var(--panel);
+    font-size:12.5px;color:var(--note)}
+  .pill b{color:var(--ink)}
+  .pill.ok b{color:var(--good)} .pill.warn b{color:var(--warn)} .pill.bad b{color:var(--bad)}
+
+  /* tabs */
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:24px 0 0}
+  .tab{background:transparent;color:var(--muted);border:0;border-bottom:2px solid transparent;
+    border-radius:0;padding:9px 15px;font-weight:600;font-size:14.5px}
+  .tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
+  .panel{padding-top:18px}
+  .panel[hidden]{display:none}
+
+  /* filters */
+  .filters{display:grid;grid-template-columns:2fr 1fr auto;gap:10px;align-items:end;margin-bottom:14px}
+  @media (max-width:820px){.filters{grid-template-columns:1fr}}
+  select{background:var(--bg);color:var(--ink);border:1px solid var(--border);border-radius:8px;
+    padding:8px 11px;font:inherit;font-size:13.5px;width:100%}
+
+  /* table */
+  .tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px}
+  table{border-collapse:collapse;width:100%;background:var(--panel);font-size:13.5px}
+  th{text-align:left;color:var(--faint);font-family:ui-monospace,Menlo,monospace;font-size:10px;
+    letter-spacing:.13em;text-transform:uppercase;padding:9px 11px;border-bottom:1px solid var(--border);
+    white-space:nowrap;position:sticky;top:0;background:var(--panel)}
+  td{padding:8px 11px;border-bottom:1px solid var(--border);vertical-align:middle;color:var(--note)}
+  tr:last-child td{border-bottom:none}
+  tr.sel td{background:color-mix(in srgb,var(--accent) 9%,transparent)}
+  td.k{color:var(--ink);font-weight:600}
+  td.addr{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  td.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;color:var(--ink)}
+  .badge{display:inline-block;border-radius:99px;padding:1px 9px;font-size:11px;font-weight:700}
+  .b-queued{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
+  .b-term{border:1px solid var(--border);color:var(--faint)}
+  .b-frozen{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+  .b-black{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+  .b-clear{color:var(--faint)}
+  input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+
+  .empty{padding:34px 16px;text-align:center;color:var(--faint);font-size:14px}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0 0}
+  .count{color:var(--muted);font-size:13.5px}
+  .card{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:15px 17px;margin:14px 0}
+  .card.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
+  .card.warn b:first-child{color:var(--warn)}
+  pre{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px 13px;
+    overflow-x:auto;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--ink);
+    white-space:pre-wrap;word-break:break-all;margin:8px 0 0}
+  code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--panel2);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px}
+  ol,ul{padding-left:20px} li{margin-bottom:8px;color:var(--note)}
+  li b{color:var(--ink)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13.5px;margin-top:4px}
+  .kv dt{color:var(--faint);font-family:ui-monospace,Menlo,monospace;font-size:11px;
+    letter-spacing:.1em;text-transform:uppercase;padding-top:3px}
+  .kv dd{margin:0;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;word-break:break-all;color:var(--ink)}
+  .err{color:var(--bad);font-size:13.5px;margin-top:10px}
+  footer{border-top:1px solid var(--border);margin-top:34px;padding-top:14px;color:var(--faint);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Sovryn · Perimeter Operations</div>
+    <h1>Block Console</h1>
+    <p class="sub">Reads the delay queue directly from chain, lets you pick the exact requests to act on,
+      and prints the transaction for the Admin multisig to sign. It never signs and never broadcasts —
+      the levers are owner/admin-gated and this page holds no key.</p>
+
+    <div class="conn">
+      <div>
+        <label for="rpc">RPC endpoint</label>
+        <input type="text" id="rpc" value="https://mainnet-dev.sovryn.app/rpc" spellcheck="false">
+      </div>
+      <div>
+        <label for="queue">ExitDelayQueue address</label>
+        <input type="text" id="queue" placeholder="0x… (the queue proxy)" spellcheck="false">
+      </div>
+      <button id="load">Load from chain</button>
+    </div>
+    <div class="strip" id="strip"></div>
+    <div class="err" id="connErr"></div>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-panel="p-req">Requests</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="p-act">Action &amp; calldata</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="p-sub">Submit via multisig</button>
+  </div>
+
+  <!-- ── Requests ─────────────────────────────────────────────── -->
+  <section class="panel" id="p-req" role="tabpanel">
+    <div class="filters">
+      <div>
+        <label for="fAddr">Filter by address — originator, owner or receiver (comma-separated)</label>
+        <input type="text" id="fAddr" placeholder="0xabc…, 0xdef…  — leave empty for every request" spellcheck="false">
+      </div>
+      <div>
+        <label for="fStatus">Status</label>
+        <select id="fStatus">
+          <option value="queued">Queued only (actionable)</option>
+          <option value="all">All statuses</option>
+        </select>
+      </div>
+      <button class="ghost" id="apply">Apply filter</button>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:34px"><input type="checkbox" id="selAll" title="Select all shown"></th>
+            <th>Id</th><th>Amount</th><th>Token</th>
+            <th>Originator</th><th>Owner</th><th>Receiver</th>
+            <th>Unlocks</th><th>Status</th><th>Parties blocked</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="10" class="empty">Enter the queue address and load from chain.</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="bar">
+      <span class="count" id="count"></span>
+      <span class="count" id="selCount"></span>
+    </div>
+  </section>
+
+  <!-- ── Action ───────────────────────────────────────────────── -->
+  <section class="panel" id="p-act" role="tabpanel" hidden>
+    <div class="card">
+      <b>Selected requests</b>
+      <div id="selList" class="mono" style="margin-top:8px;font-size:12.5px;color:var(--note)">Nothing selected yet — pick rows on the Requests tab.</div>
+      <div id="selParties" style="margin-top:12px"></div>
+    </div>
+
+    <div class="filters" style="grid-template-columns:1fr 1fr auto">
+      <div>
+        <label for="action">Lever</label>
+        <select id="action">
+          <option value="freeze">Freeze — reversible hold while you investigate</option>
+          <option value="blacklist">Blacklist — confirmed theft; unlocks recovery</option>
+        </select>
+      </div>
+      <div>
+        <label for="reason">Reason hash (bytes32, optional)</label>
+        <input type="text" id="reason" placeholder="0x0000…  — or paste a keccak256 of your reason" spellcheck="false">
+      </div>
+      <button id="gen">Generate calldata</button>
+    </div>
+
+    <div class="card">
+      <label style="margin-bottom:8px"><input type="checkbox" id="freezeRecv"> Also block each request&rsquo;s <b>receiver</b></label>
+      <p style="font-size:13px;color:var(--note);margin:6px 0 0">The originator and the position owner are always blocked. The receiver
+        is only blocked when you tick this — it is never an executor, so blocking it stops the
+        stuck-exit recovery leg as well.</p>
+    </div>
+
+    <div id="callOut"></div>
+
+    <div class="card warn">
+      <b>Before you generate.</b>
+      <ul>
+        <li>The batch is <b>atomic on chain</b>: one unknown id reverts the whole call. Only ids read from
+          this page&rsquo;s list can be selected, which is what keeps that from happening.</li>
+        <li>A <b>freeze</b> holds funds; a <b>blacklist</b> is the determination that this is theft and is the
+          only state that unlocks recovery. A frozen address escalates to blacklisted in place; a
+          blacklisted one never silently downgrades.</li>
+        <li>Neither lever stops a withdrawal being <em>initiated</em> — exits keep escrowing. What stops is
+          the payout at the far end of the hold.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ── Submit ───────────────────────────────────────────────── -->
+  <section class="panel" id="p-sub" role="tabpanel" hidden>
+    <p class="sub">The levers are gated to the queue&rsquo;s Admin or Owner. At launch that is the Exchequer
+      Multisig, so the generated calldata is submitted there and confirmed by its owners. Three of the
+      seven must act: one submits, two more confirm — and the third confirmation executes the call in the
+      same transaction. There is no separate execution step.</p>
+
+    <div class="card">
+      <dl class="kv">
+        <dt>Multisig</dt><dd id="msAddr">0x924f5aD34698fD20C90fe5d5a8A0ABD3b42dC711</dd>
+        <dt>Where</dt><dd><a href="https://rootstock.blockscout.com/address/0x924f5ad34698fD20C90fe5d5A8A0abd3b42dc711?tab=read_write_contract">Blockscout — Read/Write contract</a></dd>
+        <dt>Threshold</dt><dd>3 of 7 owner confirmations</dd>
+      </dl>
+    </div>
+
+    <h2>Submit — the first owner</h2>
+    <ol>
+      <li><b>Open the multisig on Blockscout</b> and <b>connect your wallet</b>. Blockscout connects browser
+        and hardware wallets directly; no other app is needed.</li>
+      <li><b>Find the method:</b> type <code>submitTransaction</code> into &ldquo;Search by method name&rdquo;. The list
+        collapses to <b>20.&nbsp;submitTransaction</b>. Click the row to expand it.</li>
+      <li><b>Fill the three fields</b> from the Action tab:<br>
+        <code>destination</code> — the queue address.<br>
+        <code>value</code> — <b>0</b>. Leave the ×10¹⁸ multiplier untouched.<br>
+        <code>data</code> — the generated hex, one line, starting <code>0x</code>.</li>
+      <li><b>Press Simulate first.</b> It must succeed. A failed simulation means a mis-pasted field or a
+        stale selection — do not submit; regenerate from a fresh load.</li>
+      <li><b>Press Write</b> and approve in your wallet.</li>
+      <li><b>Read the transaction id and share it.</b> Your transaction&rsquo;s <b>Logs</b> tab shows a
+        <code>Submission</code> event whose <code>transactionId</code> is what the other owners need. Your
+        submission already counts as the first confirmation.</li>
+    </ol>
+
+    <h2>Confirm — the second and third owners</h2>
+    <ol>
+      <li>Open the same page and <b>connect your wallet</b>.</li>
+      <li>Search for <code>confirmTransaction</code> — method <b>4.&nbsp;confirmTransaction</b> — and expand it.</li>
+      <li>Enter the shared <code>transactionId</code>, <b>Simulate</b>, then <b>Write</b>.</li>
+      <li>The <b>third</b> confirmation executes the call in the same transaction. A noticeably higher gas
+        estimate on that one is expected — it is the one carrying the execution.</li>
+    </ol>
+
+    <h2>Verify</h2>
+    <ul>
+      <li>Method <b>12.&nbsp;isConfirmed</b> with the id returns <code>true</code> once the threshold is reached.</li>
+      <li>Reload this console: the blocked parties should show their new state in the
+        <b>Parties blocked</b> column.</li>
+    </ul>
+
+    <div class="card warn">
+      <b>Three rules that do not bend.</b>
+      <ul>
+        <li><b>value is always 0.</b> A prepared Perimeter transaction never asks the multisig to send RBTC.
+          If one does, stop and raise it.</li>
+        <li><b>Only submit calldata you generated here, or that came through the agreed channel.</b> The hex
+          is opaque on its face; its meaning comes from the preview that accompanies it.</li>
+        <li><b>Wrong submission?</b> Before the threshold is reached, any owner who confirmed can withdraw
+          their confirmation with method <b>19.&nbsp;revokeConfirmation</b>. A transaction that never reaches
+          three confirmations never executes.</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    Read-only against the RPC you point it at. Serve it over <code>http://localhost</code> rather than opening
+    the file directly, so the browser will allow the RPC request:
+    <code>python3 -m http.server -d tools/block-console 8080</code>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+// ── ABI plumbing. Selectors are pinned, so the page needs no crypto library. ──
+const SEL = {
+  lastRequestId:        "0xfc2a88c3",
+  getRequest:           "0xc58343ef",
+  blockStateOf:         "0x48b1738d",
+  getActive:            "0x6e634bb2",
+  paused:               "0x94833fd0",
+  admin:                "0xf851a440",
+  owner:                "0x8da5cb5b",
+  freezeFromRequest:    "0x9c5ec771",
+  blacklistFromRequest: "0xda911e50",
+};
+const ZERO = "0x0000000000000000000000000000000000000000";
+const ZERO32 = "0x" + "0".repeat(64);
+
+const w = (h) => h.replace(/^0x/, "").padStart(64, "0");
+const wordAt = (hex, i) => hex.slice(2 + i * 64, 2 + (i + 1) * 64);
+const toAddr = (word) => "0x" + word.slice(24);
+const toNum = (word) => BigInt("0x" + word);
+const encUint = (n) => w(BigInt(n).toString(16));
+const isAddr = (s) => /^0x[0-9a-fA-F]{40}$/.test(s.trim());
+const short = (a) => !a || a === ZERO ? "—" : a.slice(0, 6) + "…" + a.slice(-4);
+
+let rpcId = 0;
+async function call(rpc, to, data) {
+  const res = await fetch(rpc, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "eth_call",
+      params: [{ to, data }, "latest"] }),
+  });
+  if (!res.ok) throw new Error("RPC HTTP " + res.status);
+  const j = await res.json();
+  if (j.error) throw new Error(j.error.message || "RPC error");
+  return j.result;
+}
+
+// ExitRequest is a struct of only static members, so it decodes as consecutive words.
+const STATUS = ["None", "Queued", "Executed", "Resolved to protocol", "Resolved by SIP"];
+const BLOCK = ["clear", "frozen", "blacklisted"];
+function decodeRequest(id, hex) {
+  if (!hex || hex === "0x") return null;
+  return {
+    id,
+    amount:     toNum(wordAt(hex, 0)),
+    createdAt:  Number(toNum(wordAt(hex, 1))),
+    unlockAt:   Number(toNum(wordAt(hex, 2))),
+    originator: toAddr(wordAt(hex, 3)),
+    owner:      toAddr(wordAt(hex, 4)),
+    receiver:   toAddr(wordAt(hex, 5)),
+    token:      toAddr(wordAt(hex, 6)),
+    surfaceId:  "0x" + wordAt(hex, 7),
+    subProduct: toAddr(wordAt(hex, 8)),
+    status:     Number(toNum(wordAt(hex, 9))),
+    unwrap:     toNum(wordAt(hex, 10)) === 1n,
+  };
+}
+
+// freeze/blacklistFromRequest(uint256[] ids, bool freezeReceiver, bytes32 reasonHash)
+function encodeBlockCall(selector, ids, freezeReceiver, reasonHash) {
+  const head = encUint(96) + encUint(freezeReceiver ? 1 : 0) + w(reasonHash);
+  const tail = encUint(ids.length) + ids.map(encUint).join("");
+  return selector + head + tail;
+}
+
+// ── State ──
+let CTX = { rpc: "", queue: "", paused: false, admin: ZERO, owner: ZERO };
+let ROWS = [];               // decoded requests currently shown
+let BLOCKS = new Map();      // address -> 0|1|2
+const SELECTED = new Set();  // request ids
+
+const $ = (id) => document.getElementById(id);
+const fmtAmount = (v) => {
+  const s = v.toString().padStart(19, "0");
+  const whole = s.slice(0, -18).replace(/^0+(?=\d)/, "");
+  const frac = s.slice(-18).replace(/0+$/, "");
+  return frac ? whole + "." + frac.slice(0, 6) : whole;
+};
+const fmtWhen = (ts) => {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000), now = Date.now() / 1000;
+  const rel = ts - now;
+  const mins = Math.round(Math.abs(rel) / 60);
+  const when = mins < 60 ? mins + "m" : mins < 1440 ? Math.round(mins / 60) + "h" : Math.round(mins / 1440) + "d";
+  return (rel > 0 ? "in " + when : when + " ago") + " · " + d.toISOString().slice(0, 16).replace("T", " ");
+};
+
+function setStrip() {
+  const s = $("strip");
+  if (!CTX.queue) { s.innerHTML = ""; return; }
+  s.innerHTML =
+    `<span class="pill ${CTX.paused ? "warn" : "ok"}">releases <b>${CTX.paused ? "PAUSED" : "live"}</b></span>` +
+    `<span class="pill">admin <b class="mono">${short(CTX.admin)}</b></span>` +
+    `<span class="pill">owner <b class="mono">${short(CTX.owner)}</b></span>` +
+    `<span class="pill">requests <b>${CTX.last}</b></span>`;
+}
+
+async function loadContext() {
+  const rpc = $("rpc").value.trim(), queue = $("queue").value.trim();
+  if (!isAddr(queue)) throw new Error("Enter a valid ExitDelayQueue address.");
+  CTX.rpc = rpc; CTX.queue = queue;
+  const [last, paused, admin, owner] = await Promise.all([
+    call(rpc, queue, SEL.lastRequestId),
+    call(rpc, queue, SEL.paused),
+    call(rpc, queue, SEL.admin),
+    call(rpc, queue, SEL.owner),
+  ]);
+  CTX.last = Number(toNum(wordAt(last, 0)));
+  CTX.paused = toNum(wordAt(paused, 0)) === 1n;
+  CTX.admin = toAddr(wordAt(admin, 0));
+  CTX.owner = toAddr(wordAt(owner, 0));
+  setStrip();
+}
+
+async function idsForAddresses(addrs) {
+  const out = new Set();
+  for (const a of addrs) {
+    let cursor = 0n;
+    for (let guard = 0; guard < 40; guard++) {
+      const data = SEL.getActive + w(a) + encUint(cursor) + encUint(200);
+      const res = await call(CTX.rpc, CTX.queue, data);
+      // (uint256[] ids, uint256 nextCursor): head = [offset, nextCursor]
+      const next = toNum(wordAt(res, 1));
+      const off = Number(toNum(wordAt(res, 0))) / 32;
+      const len = Number(toNum(wordAt(res, off)));
+      for (let i = 0; i < len; i++) out.add(Number(toNum(wordAt(res, off + 1 + i))));
+      if (next === 0n) break;
+      cursor = next;
+    }
+  }
+  return [...out].sort((x, y) => x - y);
+}
+
+async function loadRequests() {
+  const raw = $("fAddr").value.trim();
+  const addrs = raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  for (const a of addrs) if (!isAddr(a)) throw new Error("Not a valid address: " + a);
+
+  let ids;
+  if (addrs.length) {
+    // Filtering by party uses the queue's own index, so it stays exact and cheap.
+    ids = await idsForAddresses(addrs);
+  } else {
+    ids = Array.from({ length: CTX.last }, (_, i) => i + 1);
+  }
+
+  const reqs = [];
+  const CHUNK = 12;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const part = await Promise.all(ids.slice(i, i + CHUNK).map(async (id) => {
+      try { return decodeRequest(id, await call(CTX.rpc, CTX.queue, SEL.getRequest + encUint(id))); }
+      catch { return null; }
+    }));
+    reqs.push(...part.filter(Boolean));
+  }
+
+  const onlyQueued = $("fStatus").value === "queued";
+  ROWS = reqs.filter((r) => r.status !== 0 && (!onlyQueued || r.status === 1));
+
+  // Party block states, one lookup per distinct address.
+  const parties = new Set();
+  ROWS.forEach((r) => { parties.add(r.originator); parties.add(r.owner); parties.add(r.receiver); });
+  BLOCKS = new Map();
+  const list = [...parties];
+  for (let i = 0; i < list.length; i += CHUNK) {
+    await Promise.all(list.slice(i, i + CHUNK).map(async (a) => {
+      try { BLOCKS.set(a, Number(toNum(wordAt(await call(CTX.rpc, CTX.queue, SEL.blockStateOf + w(a)), 0)))); }
+      catch { BLOCKS.set(a, 0); }
+    }));
+  }
+  for (const id of [...SELECTED]) if (!ROWS.some((r) => r.id === id)) SELECTED.delete(id);
+  render();
+}
+
+function partyBadges(r) {
+  const bits = [["orig", r.originator], ["owner", r.owner], ["recv", r.receiver]]
+    .map(([lbl, a]) => {
+      const st = BLOCKS.get(a) || 0;
+      if (!st) return "";
+      return `<span class="badge ${st === 2 ? "b-black" : "b-frozen"}">${lbl} ${BLOCK[st]}</span>`;
+    }).filter(Boolean);
+  return bits.length ? bits.join(" ") : '<span class="badge b-clear">clear</span>';
+}
+
+function render() {
+  const tb = $("rows");
+  if (!ROWS.length) {
+    tb.innerHTML = `<tr><td colspan="10" class="empty">${CTX.queue ? "No requests match this filter." : "Enter the queue address and load from chain."}</td></tr>`;
+  } else {
+    tb.innerHTML = ROWS.map((r) => {
+      const on = SELECTED.has(r.id);
+      const term = r.status !== 1;
+      return `<tr class="${on ? "sel" : ""}">
+        <td><input type="checkbox" data-id="${r.id}" ${on ? "checked" : ""} ${term ? "disabled title='Only a queued request can be acted on'" : ""}></td>
+        <td class="k">#${r.id}</td>
+        <td class="num">${fmtAmount(r.amount)}</td>
+        <td class="addr">${r.token === ZERO ? "RBTC" : short(r.token)}</td>
+        <td class="addr" title="${r.originator}">${short(r.originator)}</td>
+        <td class="addr" title="${r.owner}">${short(r.owner)}</td>
+        <td class="addr" title="${r.receiver}">${short(r.receiver)}</td>
+        <td>${fmtWhen(r.unlockAt)}</td>
+        <td><span class="badge ${r.status === 1 ? "b-queued" : "b-term"}">${STATUS[r.status]}</span></td>
+        <td>${partyBadges(r)}</td>
+      </tr>`;
+    }).join("");
+    tb.querySelectorAll("input[type=checkbox]").forEach((c) => {
+      c.addEventListener("change", () => {
+        const id = Number(c.dataset.id);
+        c.checked ? SELECTED.add(id) : SELECTED.delete(id);
+        render();
+      });
+    });
+  }
+  $("count").textContent = ROWS.length ? `${ROWS.length} request${ROWS.length === 1 ? "" : "s"} shown` : "";
+  $("selCount").textContent = SELECTED.size ? `· ${SELECTED.size} selected` : "";
+  renderSelection();
+}
+
+function renderSelection() {
+  const ids = [...SELECTED].sort((a, b) => a - b);
+  $("selList").textContent = ids.length ? ids.map((i) => "#" + i).join("  ") : "Nothing selected yet — pick rows on the Requests tab.";
+  const box = $("selParties");
+  if (!ids.length) { box.innerHTML = ""; return; }
+  const withRecv = $("freezeRecv").checked;
+  const parties = new Set();
+  ROWS.filter((r) => SELECTED.has(r.id)).forEach((r) => {
+    parties.add(r.originator); parties.add(r.owner);
+    if (withRecv) parties.add(r.receiver);
+  });
+  box.innerHTML = `<div style="font-size:13px;color:var(--note)">This will block <b>${parties.size}</b> address${parties.size === 1 ? "" : "es"}:</div>` +
+    `<div class="mono" style="margin-top:6px;font-size:12px;color:var(--ink);word-break:break-all">${[...parties].join("<br>")}</div>`;
+}
+
+function generate() {
+  const ids = [...SELECTED].sort((a, b) => a - b);
+  const out = $("callOut");
+  if (!ids.length) { out.innerHTML = `<div class="err">Select at least one queued request first.</div>`; return; }
+  const reason = $("reason").value.trim() || ZERO32;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(reason)) {
+    out.innerHTML = `<div class="err">Reason must be a 32-byte hex value, or left empty. Generate one with <code>cast keccak "your reason"</code>.</div>`;
+    return;
+  }
+  const isFreeze = $("action").value === "freeze";
+  const data = encodeBlockCall(isFreeze ? SEL.freezeFromRequest : SEL.blacklistFromRequest,
+    ids, $("freezeRecv").checked, reason);
+
+  out.innerHTML = `
+    <div class="card">
+      <b>Submit this from the Admin multisig</b>
+      <dl class="kv" style="margin-top:10px">
+        <dt>destination</dt><dd>${CTX.queue}</dd>
+        <dt>value</dt><dd>0</dd>
+        <dt>method</dt><dd>${isFreeze ? "freezeFromRequest" : "blacklistFromRequest"}(uint256[],bool,bytes32)</dd>
+        <dt>requests</dt><dd>${ids.map((i) => "#" + i).join(", ")}</dd>
+      </dl>
+      <label style="margin-top:14px">data</label>
+      <pre id="cd">${data}</pre>
+      <div class="bar">
+        <button id="copy">Copy calldata</button>
+        <button class="ghost" id="copyAll">Copy all three fields</button>
+        <span class="count" id="copied"></span>
+      </div>
+    </div>`;
+  const flash = (m) => { $("copied").textContent = m; setTimeout(() => ($("copied").textContent = ""), 1800); };
+  $("copy").addEventListener("click", () => navigator.clipboard.writeText(data).then(() => flash("calldata copied")));
+  $("copyAll").addEventListener("click", () =>
+    navigator.clipboard.writeText(`destination: ${CTX.queue}\nvalue: 0\ndata: ${data}`).then(() => flash("all three copied")));
+}
+
+// ── Wiring ──
+document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach((x) => x.setAttribute("aria-selected", String(x === t)));
+  document.querySelectorAll(".panel").forEach((p) => (p.hidden = p.id !== t.dataset.panel));
+}));
+
+async function guarded(fn, btn) {
+  const el = $(btn); const label = el.textContent;
+  el.disabled = true; el.textContent = "Loading…"; $("connErr").textContent = "";
+  try { await fn(); }
+  catch (e) { $("connErr").textContent = e.message || String(e); }
+  finally { el.disabled = false; el.textContent = label; }
+}
+
+$("load").addEventListener("click", () => guarded(async () => { await loadContext(); await loadRequests(); }, "load"));
+$("apply").addEventListener("click", () => guarded(async () => {
+  if (!CTX.queue) throw new Error("Load from chain first.");
+  await loadRequests();
+}, "apply"));
+$("selAll").addEventListener("change", (e) => {
+  ROWS.filter((r) => r.status === 1).forEach((r) => e.target.checked ? SELECTED.add(r.id) : SELECTED.delete(r.id));
+  render();
+});
+$("freezeRecv").addEventListener("change", renderSelection);
+$("gen").addEventListener("click", generate);
+</script>
+</body>
+</html>
