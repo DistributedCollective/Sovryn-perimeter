@@ -1262,6 +1262,53 @@ contract ExitDelayQueueTest is Test {
         );
     }
 
+    /// @notice The global pause is the locked door, not a freeze on the admin's own
+    ///         hands: while every release is paused, blocking must still work, so the
+    ///         incident can be worked out and the guilty parties held before the door
+    ///         is opened again.
+    function test_blocking_works_while_releases_are_paused() public {
+        uint256 held = _queueErc20(10 ether);
+        address otherOrig = address(0x0CC1);
+        address otherOwner = address(0x0CC2);
+        uint256 stranger = _queueErc20With(5 ether, otherOrig, otherOwner, address(0x0CC3));
+
+        // Lock the door first, before anyone knows who is at fault.
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(true);
+
+        // Blocking still lands while paused — by request and by address alike.
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = held;
+        vm.prank(ADMIN);
+        queue.blacklistFromRequest(ids, false, keccak256("incident"));
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Blacklisted));
+
+        address byHand = address(0x0DD1);
+        vm.prank(ADMIN);
+        queue.freeze(byHand);
+        assertEq(uint256(queue.blockStateOf(byHand)), uint256(IExitDelayQueue.BlockState.Frozen));
+
+        // Lift the pause: the door opens, but the holds placed under it stand.
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(false);
+
+        vm.prank(OWNR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, ORIG, IExitDelayQueue.BlockState.Blacklisted
+            )
+        );
+        queue.executeExit(held);
+
+        // And everyone else is paid, which is the point of lifting it.
+        vm.prank(otherOwner);
+        queue.executeExit(stranger);
+        assertEq(
+            uint256(queue.getRequest(stranger).status), uint256(IExitDelayQueue.ExitStatus.Executed)
+        );
+    }
+
     /// @notice A plain freeze on an already-blacklisted address holds the stronger
     ///         state AND preserves the blacklist's recorded trigger — a no-evidence
     ///         freeze must not erase why the address was blacklisted.
