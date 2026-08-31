@@ -1204,6 +1204,64 @@ contract ExitDelayQueueTest is Test {
         vm.stopPrank();
     }
 
+    /// @notice Blocking is by ADDRESS, not by request: freezing via ONE request id
+    ///         holds every other queued withdrawal of the same parties, including
+    ///         ones the operator never selected and ones queued later. This is the
+    ///         property the operator surface relies on — a fraudulent actor cannot
+    ///         be half-blocked, with some of their exits still executable.
+    function test_block_by_request_holds_every_request_of_those_parties() public {
+        uint256 first = _queueErc20(10 ether);
+        uint256 second = _queueErc20(20 ether);
+        // A third party who shares nothing with them must stay unaffected.
+        address otherOrig = address(0x0BB1);
+        address otherOwner = address(0x0BB2);
+        uint256 stranger = _queueErc20With(5 ether, otherOrig, otherOwner, address(0x0BB3));
+
+        // Freeze naming ONLY the first request.
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = first;
+        vm.prank(ADMIN);
+        queue.freezeFromRequest(ids, false, keccak256("incident"));
+
+        vm.warp(block.timestamp + DELAY);
+
+        // The named request is held...
+        vm.prank(OWNR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, ORIG, IExitDelayQueue.BlockState.Frozen
+            )
+        );
+        queue.executeExit(first);
+
+        // ...and so is the one that was never named, because the PARTIES are blocked.
+        vm.prank(OWNR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, ORIG, IExitDelayQueue.BlockState.Frozen
+            )
+        );
+        queue.executeExit(second);
+
+        // A request queued AFTER the block, by the same parties, is held too.
+        uint256 later = _queueErc20(1 ether);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(OWNR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, ORIG, IExitDelayQueue.BlockState.Frozen
+            )
+        );
+        queue.executeExit(later);
+
+        // An unrelated party is untouched and still pays out.
+        vm.prank(otherOwner);
+        queue.executeExit(stranger);
+        assertEq(
+            uint256(queue.getRequest(stranger).status), uint256(IExitDelayQueue.ExitStatus.Executed)
+        );
+    }
+
     /// @notice A plain freeze on an already-blacklisted address holds the stronger
     ///         state AND preserves the blacklist's recorded trigger — a no-evidence
     ///         freeze must not erase why the address was blacklisted.
