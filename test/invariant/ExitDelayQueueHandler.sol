@@ -445,9 +445,10 @@ contract ExitDelayQueueHandler is Test {
         if (uint8(queue.blockStateOf(r.originator)) < uint8(want)) byRequestPartyMisses++;
         if (uint8(queue.blockStateOf(r.owner)) < uint8(want)) byRequestPartyMisses++;
         if (receiver) {
-            if (queue.blockStateOf(r.receiver) == IExitDelayQueue.BlockState.None) {
-                byRequestReceiverMisses++;
-            }
+            // Same floor as the source parties, not merely "blocked at all": a
+            // blacklist-by-request that only FROZE the receiver would otherwise
+            // pass, and a freeze is clearable and does not authorize Leg-2.
+            if (uint8(queue.blockStateOf(r.receiver)) < uint8(want)) byRequestReceiverMisses++;
         } else if (r.receiver != r.originator && r.receiver != r.owner) {
             // Unflagged and not a source party: the lever must not have touched it.
             if (queue.blockStateOf(r.receiver) != receiverBefore) byRequestReceiverLeaks++;

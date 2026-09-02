@@ -56,13 +56,27 @@ contract EchidnaExitDelayQueue {
     bytes32 internal nativeRouteId;
 
     // operator-lever ghost state, mirroring ExitDelayQueueHandler
-    mapping(address => uint256) internal paidTo;
-    uint256 internal blockedPayouts;
-    uint256 internal blockedPayoutValue;
-    uint256 internal pausedPayouts;
-    mapping(uint256 => bool) internal resolvedByRoute;
-    uint256 internal routeResolutions;
-    uint256 internal routeResolutionsWithoutBlacklist;
+    mapping(address => uint256) public paidTo;
+    uint256 public paidTotal;
+    uint256 public blockedPayouts;
+    uint256 public blockedPayoutValue;
+    uint256 public pausedPayouts;
+    mapping(uint256 => bool) public resolvedByRoute;
+    uint256 public routeResolutions;
+    uint256 public routeResolutionsWithoutBlacklist;
+
+    // Reachability counters. A "this never happened" property is satisfied for
+    // free by a campaign that never enters the path it guards, so these record
+    // that the campaign did. They are permanent and public: `leversReached()`
+    // reads them, and inverting it into a property makes a run falsify it,
+    // which is the campaign reporting its own coverage in one line.
+    uint256 public executedPayouts; // requests released by execute/executeMany
+    uint256 public executedWhileBlockedAttempts; // releases tried with a party blocked
+    uint256 public executedWhilePausedAttempts; // releases tried under the pause
+    uint256 public batchExecutions; // successful executeExits calls
+    uint256 public batchExecutedIds; // requests released through the batch path
+    uint256 public byRequestBlocks; // successful freeze/blacklistFromRequest calls
+    uint256 public byRequestReceiverBlocks; // ...of which carried freezeReceiver
 
     constructor() payable {
         actors[0] = address(this);
@@ -140,6 +154,8 @@ contract EchidnaExitDelayQueue {
         // a release, so this is the state at execution time.
         bool paused = queue.securityPerimeterPaused();
         address blocked = _anyBlocked(r);
+        if (paused) executedWhilePausedAttempts++;
+        if (blocked != address(0)) executedWhileBlockedAttempts++;
         try queue.executeExit(id) {
             _onPaid(r, paused, blocked);
         } catch {}
@@ -162,7 +178,12 @@ contract EchidnaExitDelayQueue {
         bool paused = queue.securityPerimeterPaused();
         address blockedA = _anyBlocked(a);
         address blockedB = pair ? _anyBlocked(b) : address(0);
+        if (paused) executedWhilePausedAttempts += ids.length;
+        if (blockedA != address(0)) executedWhileBlockedAttempts++;
+        if (blockedB != address(0)) executedWhileBlockedAttempts++;
         try queue.executeExits(ids) {
+            batchExecutions++;
+            batchExecutedIds += ids.length;
             _onPaid(a, paused, blockedA);
             if (pair) _onPaid(b, paused, blockedB);
         } catch {}
@@ -180,7 +201,9 @@ contract EchidnaExitDelayQueue {
     /// @dev Ledger entry for a request a release actually paid, alongside the
     ///      two conditions that were meant to make the payout impossible.
     function _onPaid(IExitDelayQueue.ExitRequest memory r, bool paused, address blocked) internal {
+        executedPayouts++;
         paidTo[r.receiver] += r.amount;
+        paidTotal += r.amount;
         if (paused) pausedPayouts++;
         if (blocked != address(0)) {
             blockedPayouts++;
@@ -206,10 +229,19 @@ contract EchidnaExitDelayQueue {
         uint256[] memory ids = new uint256[](1);
         ids[0] = liveIds[idSeed % liveIds.length];
         if (confirmed) {
-            try queue.blacklistFromRequest(ids, receiver, BLOCK_REASON) {} catch {}
+            try queue.blacklistFromRequest(ids, receiver, BLOCK_REASON) {
+                _onByRequest(receiver);
+            } catch {}
         } else {
-            try queue.freezeFromRequest(ids, receiver, BLOCK_REASON) {} catch {}
+            try queue.freezeFromRequest(ids, receiver, BLOCK_REASON) {
+                _onByRequest(receiver);
+            } catch {}
         }
+    }
+
+    function _onByRequest(bool receiver) internal {
+        byRequestBlocks++;
+        if (receiver) byRequestReceiverBlocks++;
     }
 
     // ── recovery routes (Leg-2) ──
@@ -386,7 +418,10 @@ contract EchidnaExitDelayQueue {
     /// @dev No release ever paid out while any of originator/owner/receiver was
     ///      Frozen or Blacklisted, measured at execution time.
     function echidna_blocked_party_never_paid() external view returns (bool) {
-        return blockedPayouts == 0 && blockedPayoutValue == 0;
+        // Every credit in the payout ledger names a known request party: the
+        // stored receiver is immutable, so a release cannot pay elsewhere.
+        uint256 credited = paidTo[actors[0]] + paidTo[actors[1]] + paidTo[actors[2]];
+        return blockedPayouts == 0 && blockedPayoutValue == 0 && credited == paidTotal;
     }
 
     /// @dev A paused perimeter pays nobody.
@@ -398,5 +433,28 @@ contract EchidnaExitDelayQueue {
     ///      owner was Blacklisted.
     function echidna_route_needs_blacklist() external view returns (bool) {
         return routeResolutionsWithoutBlacklist == 0;
+    }
+
+    /// @notice True once the campaign has entered every guarded path the three
+    ///         properties above are about. Not a property itself — a run that
+    ///         has not got there yet is not a failure. To have a campaign report
+    ///         its own coverage, add a property returning `!leversReached()`:
+    ///         it must be falsified, and the sequence shows how it got there.
+    function leversReached() public view returns (bool) {
+        return executedPayouts > 0 && executedWhileBlockedAttempts > 0 && executedWhilePausedAttempts > 0
+            && byRequestBlocks > 0 && byRequestReceiverBlocks > 0 && batchExecutedIds > 1
+            && routeResolutions > 0;
+    }
+
+    /// @dev The ledger and the reachability counters have to agree: a payout
+    ///      taken under a gate is one of the payouts, a batch never reports
+    ///      fewer ids than calls, and an unauthorized route resolution is one of
+    ///      the route resolutions. Drift here means the evidence above is
+    ///      measuring something other than what it claims.
+    function echidna_lever_counters_consistent() external view returns (bool) {
+        return blockedPayouts <= executedPayouts && pausedPayouts <= executedPayouts
+            && blockedPayoutValue <= paidTotal && batchExecutions <= batchExecutedIds
+            && byRequestReceiverBlocks <= byRequestBlocks
+            && routeResolutionsWithoutBlacklist <= routeResolutions;
     }
 }

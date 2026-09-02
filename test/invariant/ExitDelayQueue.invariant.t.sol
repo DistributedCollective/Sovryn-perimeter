@@ -243,11 +243,15 @@ contract ExitDelayQueueInvariant is Test {
         assertGt(handler.executedWhileBlockedAttempts(), 0, "no release was attempted with a blocked party");
         handler.unfreeze(0);
 
-        // Both by-request block variants: one catching the receiver, one not.
+        // Both by-request block variants, with and without the receiver. The
+        // last call escalates a receiver the freeze above left merely Frozen, so
+        // the receiver's "at least as hard-blocked as asked" floor is exercised
+        // and not just its "blocked at all" state.
         handler.freezeByRequest(2, true);
         handler.blacklistByRequest(2, false);
-        assertEq(handler.byRequestBlocks(), 2, "by-request blocking never ran");
-        assertGt(handler.byRequestReceiverBlocks(), 0, "the receiver-catching variant never ran");
+        handler.blacklistByRequest(2, true);
+        assertEq(handler.byRequestBlocks(), 3, "by-request blocking never ran");
+        assertEq(handler.byRequestReceiverBlocks(), 2, "the receiver-catching variant never ran");
 
         // Recovery-away down both routes, now that a source party is blacklisted.
         handler.resolveByRoute(2);
