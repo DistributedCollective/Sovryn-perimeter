@@ -51,10 +51,14 @@ contract ExitDelayQueueInvariant is Test {
         vm.prank(address(handler));
         queue.acceptOwnership();
 
+        // Leg-2 routes matching the handler's own ingress provenance, so the
+        // recovery-away action is reachable from the first step of every run.
+        handler.setUpRoutes();
+
         // target only the handler
         targetContract(address(handler));
 
-        bytes4[] memory selectors = new bytes4[](17);
+        bytes4[] memory selectors = new bytes4[](22);
         selectors[0] = handler.recordErc20.selector;
         selectors[1] = handler.recordNative.selector;
         selectors[2] = handler.execute.selector;
@@ -78,6 +82,14 @@ contract ExitDelayQueueInvariant is Test {
         // break solvency / double-spend, whichever branch it takes (stored-receiver
         // pay, altReceiver pay on a bounce, or whole-call revert on block/lock/pause).
         selectors[16] = handler.recoverStuck.selector;
+        // Operator levers the release depends on: blocking by request id (with
+        // and without the receiver), batch release, route registration and
+        // recovery-away along a route.
+        selectors[17] = handler.freezeByRequest.selector;
+        selectors[18] = handler.blacklistByRequest.selector;
+        selectors[19] = handler.executeMany.selector;
+        selectors[20] = handler.addRoute.selector;
+        selectors[21] = handler.resolveByRoute.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -129,6 +141,133 @@ contract ExitDelayQueueInvariant is Test {
                 assertFalse(_inActive(r.owner, id), "terminal id must NOT be in owner active set");
             }
         }
+    }
+
+    // ── operator levers ──────────────────────────────────────────
+
+    /// @notice No release ever paid a party the perimeter had blocked. The
+    ///         handler snapshots `blockStateOf` for originator, owner and
+    ///         receiver immediately before every `executeExit`/`executeExits`
+    ///         and credits the payout ledger on success; a payout taken while
+    ///         any of the three was Frozen or Blacklisted is recorded, not
+    ///         filtered out.
+    function invariant_blocked_party_never_paid() public view {
+        assertEq(handler.blockedPayouts(), 0, "a release paid out while a party was blocked");
+        assertEq(handler.blockedPayoutValue(), 0, "value left the queue while a party was blocked");
+        assertEq(handler.blockedPayoutParty(), address(0), "blocked party was paid");
+        // Every credit in the ledger names one of the three known actors: the
+        // stored receiver is immutable, so a release can never pay elsewhere.
+        uint256 credited;
+        for (uint256 i = 0; i < 3; ++i) {
+            credited += handler.paidTo(handler.actors(i));
+        }
+        assertEq(credited, handler.paidTotal(), "a release paid an address that is not a request party");
+    }
+
+    /// @notice A paused perimeter pays nobody. The handler snapshots
+    ///         `securityPerimeterPaused()` before each release and counts any
+    ///         release that still went through.
+    function invariant_pause_stops_payouts() public view {
+        assertEq(handler.pausedPayouts(), 0, "a release paid out while the perimeter was paused");
+    }
+
+    /// @notice Recovery-away along a route only ever moved funds whose
+    ///         originator or owner was Blacklisted, and every id it moved is
+    ///         terminal in exactly that state.
+    function invariant_route_resolution_requires_blacklist() public view {
+        assertEq(
+            handler.routeResolutionsWithoutBlacklist(),
+            0,
+            "a route resolved funds with no blacklisted source party"
+        );
+        assertEq(handler.unauthorizedRouteResolutionId(), 0, "unauthorized route resolution");
+        uint256 n = handler.routeResolvedIdCount();
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 id = handler.routeResolvedIdAt(i);
+            assertTrue(handler.resolvedByRoute(id), "route ledger missing an id it resolved");
+            assertEq(
+                uint256(queue.getRequest(id).status),
+                uint256(IExitDelayQueue.ExitStatus.ResolvedToProtocol),
+                "route-resolved id is not ResolvedToProtocol"
+            );
+        }
+    }
+
+    /// @notice Blocking by request id blocks exactly that request's parties:
+    ///         originator and owner always land at least as hard-blocked as
+    ///         asked, the receiver lands blocked when and only when the caller
+    ///         flagged it, and an unflagged receiver that is not itself a source
+    ///         party is left untouched. Measured by the handler the moment the
+    ///         call returns, because a later unfreeze may legitimately clear it.
+    function invariant_by_request_block_matches_parties() public view {
+        assertEq(handler.byRequestPartyMisses(), 0, "by-request block left a source party unblocked");
+        assertEq(handler.byRequestReceiverMisses(), 0, "by-request block skipped a flagged receiver");
+        assertEq(handler.byRequestReceiverLeaks(), 0, "by-request block touched an unflagged receiver");
+    }
+
+    // ── reachability ─────────────────────────────────────────────
+
+    /// @notice Non-vacuity companion for the four operator-lever invariants.
+    ///         Each of them is a "this never happened" assertion, which a
+    ///         handler that never reaches the guarded path would satisfy for
+    ///         free. This drives a short scripted campaign through the same
+    ///         handler and proves every guarded path was entered: a release was
+    ///         attempted under the pause, a release was attempted with a blocked
+    ///         party, a two-id batch was released, both by-request block
+    ///         variants ran, and both routes resolved funds away. The guard
+    ///         counters are then still zero — the invariants hold on a run that
+    ///         demonstrably reached them.
+    function test_handler_reaches_operator_levers() public {
+        // Three ERC20 exits and one native exit, all sharing originator/owner so
+        // one caller can release a batch of them.
+        handler.recordErc20(uint128(1e18), 0, 0, 0);
+        handler.recordErc20(uint128(1e18), 0, 0, 0);
+        handler.recordErc20(uint128(1e18), 0, 0, 0);
+        handler.recordNative(uint128(1e18), 0, 0, 0);
+
+        // Batch release of two ids in one call.
+        handler.executeMany(0, 1);
+        assertEq(handler.batchExecutions(), 1, "batch release never ran");
+        assertEq(handler.batchExecutedIds(), 2, "batch release did not carry two ids");
+        assertGt(handler.executedPayouts(), 0, "no release was ever paid");
+
+        // A release attempted while the perimeter is paused.
+        handler.pause(true);
+        handler.execute(2, 0);
+        assertGt(handler.executedWhilePausedAttempts(), 0, "no release was attempted under the pause");
+        handler.pause(false);
+
+        // A release attempted with a blocked party.
+        handler.freeze(0);
+        handler.execute(2, 0);
+        assertGt(handler.executedWhileBlockedAttempts(), 0, "no release was attempted with a blocked party");
+        handler.unfreeze(0);
+
+        // Both by-request block variants: one catching the receiver, one not.
+        handler.freezeByRequest(2, true);
+        handler.blacklistByRequest(2, false);
+        assertEq(handler.byRequestBlocks(), 2, "by-request blocking never ran");
+        assertGt(handler.byRequestReceiverBlocks(), 0, "the receiver-catching variant never ran");
+
+        // Recovery-away down both routes, now that a source party is blacklisted.
+        handler.resolveByRoute(2);
+        handler.resolveByRoute(3);
+        assertEq(handler.routeResolutions(), 2, "route resolution never ran on both routes");
+
+        // Re-registering a route is idempotent and stays reachable.
+        handler.addRoute(0);
+        handler.addRoute(1);
+        assertEq(handler.routesRegistered(), 4, "route registration never ran");
+
+        // …and every guard the four invariants pin still held throughout.
+        invariant_blocked_party_never_paid();
+        invariant_pause_stops_payouts();
+        invariant_route_resolution_requires_blacklist();
+        invariant_by_request_block_matches_parties();
+        invariant_solvency_erc20();
+        invariant_solvency_native();
+        invariant_id_monotonic();
+        invariant_no_double_terminal();
     }
 
     function _inActive(address party, uint256 id) internal view returns (bool) {

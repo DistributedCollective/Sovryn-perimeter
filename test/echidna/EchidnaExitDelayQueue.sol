@@ -44,6 +44,26 @@ contract EchidnaExitDelayQueue {
 
     uint256[] internal liveIds;
 
+    // Provenance stamped on every recorded request; the Leg-2 routes are
+    // registered from these exact values so recovery-away is reachable.
+    bytes32 internal constant ERC20_SURFACE = keccak256("S");
+    bytes32 internal constant NATIVE_SURFACE = keccak256("Z");
+    address internal constant ERC20_SUBPRODUCT = address(0xBEEF);
+    address internal constant NATIVE_ROUTE_DESTINATION = address(0x2EC0);
+    bytes32 internal constant BLOCK_REASON = keccak256("perimeter-incident");
+
+    bytes32 internal erc20RouteId;
+    bytes32 internal nativeRouteId;
+
+    // operator-lever ghost state, mirroring ExitDelayQueueHandler
+    mapping(address => uint256) internal paidTo;
+    uint256 internal blockedPayouts;
+    uint256 internal blockedPayoutValue;
+    uint256 internal pausedPayouts;
+    mapping(uint256 => bool) internal resolvedByRoute;
+    uint256 internal routeResolutions;
+    uint256 internal routeResolutionsWithoutBlacklist;
+
     constructor() payable {
         actors[0] = address(this);
         actors[1] = address(0xA1);
@@ -62,6 +82,9 @@ contract EchidnaExitDelayQueue {
         queue.setNativePusher(address(this));
 
         token.mint(address(this), type(uint128).max);
+
+        _registerErc20Route();
+        _registerNativeRoute();
     }
 
     receive() external payable {}
@@ -76,11 +99,11 @@ contract EchidnaExitDelayQueue {
             address(token),
             amount,
             d,
-            keccak256("S"),
-            address(0xBEEF),
+            ERC20_SURFACE,
+            ERC20_SUBPRODUCT,
             actors[aSeed % 3],
             actors[bSeed % 3],
-            actors[(aSeed + 1) % 3],
+            actors[(aSeed % 3 + 1) % 3],
             false
         ) returns (uint256 id) {
             liveIds.push(id);
@@ -96,11 +119,11 @@ contract EchidnaExitDelayQueue {
         try queue.recordNativeExit{value: amount}(
             amount,
             d,
-            keccak256("Z"),
+            NATIVE_SURFACE,
             address(0),
             actors[aSeed % 3],
             actors[bSeed % 3],
-            actors[(bSeed + 1) % 3]
+            actors[(bSeed % 3 + 1) % 3]
         ) returns (uint256 id) {
             liveIds.push(id);
             ghostQueuedNative += amount;
@@ -113,9 +136,166 @@ contract EchidnaExitDelayQueue {
         uint256 id = liveIds[idSeed % liveIds.length];
         IExitDelayQueue.ExitRequest memory r = queue.getRequest(id);
         if (r.status != IExitDelayQueue.ExitStatus.Queued) return;
+        // Snapshot the two release gates before the call. Neither is changed by
+        // a release, so this is the state at execution time.
+        bool paused = queue.securityPerimeterPaused();
+        address blocked = _anyBlocked(r);
         try queue.executeExit(id) {
+            _onPaid(r, paused, blocked);
+        } catch {}
+    }
+
+    /// @dev Batch release. The harness is the only caller, so the second id
+    ///      joins the batch only when the harness is a party to it too;
+    ///      otherwise a one-element batch runs.
+    function executeMany(uint256 seedA, uint256 seedB) external {
+        if (liveIds.length == 0) return;
+        uint256 idA = liveIds[seedA % liveIds.length];
+        uint256 idB = liveIds[seedB % liveIds.length];
+        IExitDelayQueue.ExitRequest memory a = queue.getRequest(idA);
+        if (a.status != IExitDelayQueue.ExitStatus.Queued) return;
+        IExitDelayQueue.ExitRequest memory b = queue.getRequest(idB);
+        bool pair = idB != idA && b.status == IExitDelayQueue.ExitStatus.Queued;
+        uint256[] memory ids = new uint256[](pair ? 2 : 1);
+        ids[0] = idA;
+        if (pair) ids[1] = idB;
+        bool paused = queue.securityPerimeterPaused();
+        address blockedA = _anyBlocked(a);
+        address blockedB = pair ? _anyBlocked(b) : address(0);
+        try queue.executeExits(ids) {
+            _onPaid(a, paused, blockedA);
+            if (pair) _onPaid(b, paused, blockedB);
+        } catch {}
+    }
+
+    /// @dev The party that would have made this release illegal, or the zero
+    ///      address when all three are clear.
+    function _anyBlocked(IExitDelayQueue.ExitRequest memory r) internal view returns (address) {
+        if (queue.blockStateOf(r.originator) != IExitDelayQueue.BlockState.None) return r.originator;
+        if (queue.blockStateOf(r.owner) != IExitDelayQueue.BlockState.None) return r.owner;
+        if (queue.blockStateOf(r.receiver) != IExitDelayQueue.BlockState.None) return r.receiver;
+        return address(0);
+    }
+
+    /// @dev Ledger entry for a request a release actually paid, alongside the
+    ///      two conditions that were meant to make the payout impossible.
+    function _onPaid(IExitDelayQueue.ExitRequest memory r, bool paused, address blocked) internal {
+        paidTo[r.receiver] += r.amount;
+        if (paused) pausedPayouts++;
+        if (blocked != address(0)) {
+            blockedPayouts++;
+            blockedPayoutValue += r.amount;
+        }
+        _onTerminal(r);
+    }
+
+    // ── blocking by request id ──
+
+    /// @dev Name a request, block the parties behind it; `freezeReceiver`
+    ///      decides whether the payout destination is caught too.
+    function freezeByRequest(uint256 idSeed, bool receiver) external {
+        _blockByRequest(idSeed, receiver, false);
+    }
+
+    function blacklistByRequest(uint256 idSeed, bool receiver) external {
+        _blockByRequest(idSeed, receiver, true);
+    }
+
+    function _blockByRequest(uint256 idSeed, bool receiver, bool confirmed) internal {
+        if (liveIds.length == 0) return;
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = liveIds[idSeed % liveIds.length];
+        if (confirmed) {
+            try queue.blacklistFromRequest(ids, receiver, BLOCK_REASON) {} catch {}
+        } else {
+            try queue.freezeFromRequest(ids, receiver, BLOCK_REASON) {} catch {}
+        }
+    }
+
+    // ── recovery routes (Leg-2) ──
+
+    /// @dev A top-up route may only be registered on a feasible surface, must
+    ///      carry a real token, and must pay the pool the exit came from.
+    function _registerErc20Route() internal {
+        queue.setTopUpFeasible(ERC20_SURFACE, true);
+        erc20RouteId = queue.setRecoveryRoute(
+            IExitDelayQueue.RecoveryRoute({
+                active: true,
+                surfaceId: ERC20_SURFACE,
+                subProduct: ERC20_SUBPRODUCT,
+                token: address(token),
+                destination: ERC20_SUBPRODUCT,
+                topUpPool: true
+            })
+        );
+    }
+
+    /// @dev A native exit can never be a pool top-up, so this is a plain
+    ///      recovery-away route.
+    function _registerNativeRoute() internal {
+        nativeRouteId = queue.setRecoveryRoute(
+            IExitDelayQueue.RecoveryRoute({
+                active: true,
+                surfaceId: NATIVE_SURFACE,
+                subProduct: address(0),
+                token: address(0),
+                destination: NATIVE_ROUTE_DESTINATION,
+                topUpPool: false
+            })
+        );
+    }
+
+    /// @dev Re-registering a route is idempotent (its id is derived from its own
+    ///      fields) and re-runs the registration guards each time.
+    function addRoute(uint256 tokenSeed) external {
+        if (tokenSeed % 2 == 0) {
+            _registerErc20Route();
+        } else {
+            _registerNativeRoute();
+        }
+    }
+
+    /// @dev Leg-2 recovery-away. The blacklist state of the source parties is
+    ///      read before the call and carried into ghost state as observed — the
+    ///      action never filters on it, so a resolution that went through
+    ///      without one is recorded rather than skipped.
+    function resolveByRoute(uint256 idSeed) external {
+        if (liveIds.length == 0) return;
+        uint256 id = _routeCandidate(idSeed);
+        IExitDelayQueue.ExitRequest memory r = queue.getRequest(id);
+        if (r.status != IExitDelayQueue.ExitStatus.Queued) return;
+        bytes32 routeId = r.token == address(0) ? nativeRouteId : erc20RouteId;
+        bool blacklisted = queue.blockStateOf(r.originator) == IExitDelayQueue.BlockState.Blacklisted
+            || queue.blockStateOf(r.owner) == IExitDelayQueue.BlockState.Blacklisted;
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        try queue.resolveToProtocol(ids, routeId) {
+            resolvedByRoute[id] = true;
+            routeResolutions++;
+            if (!blacklisted) routeResolutionsWithoutBlacklist++;
             _onTerminal(r);
         } catch {}
+    }
+
+    /// @dev Prefer a Queued id whose Leg-2 authorization already holds so the
+    ///      route path is reachable, falling back to the plain seed pick — the
+    ///      fallback is what would carry an unauthorized resolution through if
+    ///      the queue ever stopped demanding a blacklist. The seed is reduced
+    ///      before the scan offset is added so a max seed cannot overflow.
+    function _routeCandidate(uint256 idSeed) internal view returns (uint256) {
+        uint256 n = liveIds.length;
+        uint256 base = idSeed % n;
+        uint256 scan = n < 16 ? n : 16;
+        for (uint256 i = 0; i < scan; ++i) {
+            uint256 c = liveIds[(base + i) % n];
+            IExitDelayQueue.ExitRequest memory r = queue.getRequest(c);
+            if (r.status != IExitDelayQueue.ExitStatus.Queued) continue;
+            if (
+                queue.blockStateOf(r.originator) == IExitDelayQueue.BlockState.Blacklisted
+                    || queue.blockStateOf(r.owner) == IExitDelayQueue.BlockState.Blacklisted
+            ) return c;
+        }
+        return liveIds[base];
     }
 
     /// @dev Gate-5 redirect leg (mirrors ExitDelayQueueHandler.recoverStuck).
@@ -201,5 +381,22 @@ contract EchidnaExitDelayQueue {
 
     function echidna_no_double_terminal() external view returns (bool) {
         return totalTerminal <= totalRecorded;
+    }
+
+    /// @dev No release ever paid out while any of originator/owner/receiver was
+    ///      Frozen or Blacklisted, measured at execution time.
+    function echidna_blocked_party_never_paid() external view returns (bool) {
+        return blockedPayouts == 0 && blockedPayoutValue == 0;
+    }
+
+    /// @dev A paused perimeter pays nobody.
+    function echidna_pause_stops_payouts() external view returns (bool) {
+        return pausedPayouts == 0;
+    }
+
+    /// @dev Recovery-away down a route only ever moved funds whose originator or
+    ///      owner was Blacklisted.
+    function echidna_route_needs_blacklist() external view returns (bool) {
+        return routeResolutionsWithoutBlacklist == 0;
     }
 }
