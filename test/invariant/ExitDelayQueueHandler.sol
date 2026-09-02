@@ -74,6 +74,7 @@ contract ExitDelayQueueHandler is Test {
     mapping(address => uint256) public paidTo; // sum released, per receiver
     uint256 public paidTotal;
     uint256 public executedPayouts; // requests released by execute/executeMany
+    uint256 public recoveredPayouts; // requests paid out by recoverStuckExit
     uint256 public blockedPayouts; // released while a party was Frozen/Blacklisted
     uint256 public blockedPayoutValue;
     address public blockedPayoutParty; // first counterexample, for the failure message
@@ -84,6 +85,7 @@ contract ExitDelayQueueHandler is Test {
     uint256 public executedWhilePausedAttempts;
     uint256 public batchExecutions; // successful executeExits calls
     uint256 public batchExecutedIds; // requests released through the batch path
+    uint256 public multiIdBatches; // ...of which carried more than one id
 
     // ── Leg-2 route resolutions
     mapping(uint256 => bool) public resolvedByRoute;
@@ -277,6 +279,7 @@ contract ExitDelayQueueHandler is Test {
         try queue.executeExits(ids) {
             batchExecutions++;
             batchExecutedIds += ids.length;
+            if (ids.length > 1) multiIdBatches++;
             _onPaid(a, paused, blockedA);
             if (pair) _onPaid(b, paused, blockedB);
         } catch {}
@@ -296,12 +299,41 @@ contract ExitDelayQueueHandler is Test {
         return address(0);
     }
 
+    /// @dev The party that would have made this recovery illegal. Recovery
+    ///      carries a stricter gate than a plain release: `altReceiver` is a
+    ///      fourth actor the queue also refuses to pay past.
+    function _anyBlockedForRecovery(IExitDelayQueue.ExitRequest memory r, address alt)
+        internal
+        view
+        returns (address)
+    {
+        address blocked = _anyBlocked(r);
+        if (blocked != address(0)) return blocked;
+        if (queue.blockStateOf(alt) != IExitDelayQueue.BlockState.None) return alt;
+        return address(0);
+    }
+
+    /// @dev Balance of `who` in the asset the request escrows; address(0) is
+    ///      native. Reading it either side of a payout is what names the actual
+    ///      recipient without trusting which branch the queue took.
+    function _balanceOf(address t, address who) internal view returns (uint256) {
+        return t == address(0) ? who.balance : token.balanceOf(who);
+    }
+
     /// @dev Ledger entry for a request a release actually paid out. Records where
     ///      the value went and, alongside it, the two conditions that were meant
     ///      to make the payout impossible.
     function _onPaid(IExitDelayQueue.ExitRequest memory r, bool paused, address blocked) internal {
         executedPayouts++;
-        paidTo[r.receiver] += r.amount;
+        _onPaidTo(r, r.receiver, paused, blocked);
+    }
+
+    /// @dev Payout ledger keyed on the address the value actually reached, which
+    ///      the recovery leg may choose at payout time.
+    function _onPaidTo(IExitDelayQueue.ExitRequest memory r, address recipient, bool paused, address blocked)
+        internal
+    {
+        paidTo[recipient] += r.amount;
         paidTotal += r.amount;
         if (paused) pausedPayouts++;
         if (blocked != address(0)) {
@@ -359,9 +391,15 @@ contract ExitDelayQueueHandler is Test {
     ///      branch) it is a TERMINAL transition, so ghost accounting must decrement,
     ///      exactly like execute. On a block/lock/pause/terminal/guard it reverts and
     ///      is caught (no state change). altReceiver is one of the plain handler
-    ///      actors (never 0/this/token/wrbtc), so the guard never trips here. The
-    ///      invariant property: recovery NEVER breaks solvency or double-spends,
-    ///      whichever branch it takes.
+    ///      actors (never 0/this/token/wrbtc), so the guard never trips here.
+    ///
+    ///      This is a SECOND payout leg, so a success goes through the same
+    ///      payout ledger as a plain release: the pause and the four-actor block
+    ///      gate are snapshotted before the call, and the recipient is read off
+    ///      the balance the payout moved rather than assumed, because the leg
+    ///      pays altReceiver when the stored receiver bounces. The invariant
+    ///      properties: recovery never pays a blocked party, never pays under the
+    ///      pause, and never breaks solvency or double-spends.
     function recoverStuck(uint256 idSeed, uint256 actorSeed) external {
         if (liveIds.length == 0) return;
         uint256 id = liveIds[idSeed % liveIds.length];
@@ -370,12 +408,32 @@ contract ExitDelayQueueHandler is Test {
         if (actorSeed % 2 == 0 && block.timestamp < r.unlockAt) {
             vm.warp(r.unlockAt);
         }
-        address caller = actors[actorSeed % 3];
-        address altReceiver = actors[(actorSeed / 3) % 3];
+        _recover(id, r, actors[actorSeed % 3], actors[(actorSeed / 3) % 3]);
+    }
+
+    /// @dev Split out of `recoverStuck` to keep both frames inside the stack
+    ///      limit. Every read that could consume the prank is taken before it.
+    function _recover(uint256 id, IExitDelayQueue.ExitRequest memory r, address caller, address alt)
+        internal
+    {
+        bool paused = queue.securityPerimeterPaused();
+        address blocked = _anyBlockedForRecovery(r, alt);
+        uint256 balBefore = _balanceOf(r.token, r.receiver);
         vm.prank(caller);
-        try queue.recoverStuckExit(id, altReceiver) {
-            _onTerminal(r);
+        try queue.recoverStuckExit(id, alt) {
+            recoveredPayouts++;
+            _onPaidTo(r, _recipientOf(r, alt, balBefore), paused, blocked);
         } catch {}
+    }
+
+    /// @dev Whoever the payout actually credited: the stored receiver when its
+    ///      balance moved by the request amount, otherwise the alternate.
+    function _recipientOf(IExitDelayQueue.ExitRequest memory r, address alt, uint256 balBefore)
+        internal
+        view
+        returns (address)
+    {
+        return _balanceOf(r.token, r.receiver) >= balBefore + r.amount ? r.receiver : alt;
     }
 
     // ── recovery ──

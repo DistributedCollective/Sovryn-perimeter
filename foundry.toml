@@ -30,7 +30,7 @@ fs_permissions = [
 # ignored_error_codes = [<code>]
 
 [profile.default.invariant]
-# Bounded so the stateful ExitDelayQueue suite (15 handler selectors, per-step
+# Bounded so the stateful ExitDelayQueue suite (22 handler selectors, per-step
 # index-consistency assertions that page the active sets) completes in CI time.
 # Raise runs/depth for a deeper campaign; the defaults (256×500) are too heavy
 # for the O(n) index paging on every step.

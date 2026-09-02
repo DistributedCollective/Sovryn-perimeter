@@ -7,4 +7,13 @@
 testMode: property
 testLimit: 50000
 timeout: 300
+# Property mode resets contract state between sequences, so every ghost counter
+# the operator-lever properties read is per-sequence. The reachability harness
+# (EchidnaExitDelayQueueReach) asks for ALL of those counters to be non-zero at
+# once, which needs a sequence long enough to record exits, release a batch of
+# them, recover one, pause, block by request, and resolve a route — measured at
+# 1000; 500 does not get there. The release gate runs the property campaign and
+# the reachability campaign at this same length, because a reachability run at a
+# different length certifies nothing about the campaign that ships.
+seqLen: 1000
 balanceContract: 100000000000000000000000

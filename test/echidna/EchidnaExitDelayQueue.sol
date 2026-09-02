@@ -71,10 +71,12 @@ contract EchidnaExitDelayQueue {
     // reads them, and inverting it into a property makes a run falsify it,
     // which is the campaign reporting its own coverage in one line.
     uint256 public executedPayouts; // requests released by execute/executeMany
+    uint256 public recoveredPayouts; // requests paid out by recoverStuckExit
     uint256 public executedWhileBlockedAttempts; // releases tried with a party blocked
     uint256 public executedWhilePausedAttempts; // releases tried under the pause
     uint256 public batchExecutions; // successful executeExits calls
     uint256 public batchExecutedIds; // requests released through the batch path
+    uint256 public multiIdBatches; // ...of which carried more than one id
     uint256 public byRequestBlocks; // successful freeze/blacklistFromRequest calls
     uint256 public byRequestReceiverBlocks; // ...of which carried freezeReceiver
 
@@ -161,9 +163,13 @@ contract EchidnaExitDelayQueue {
         } catch {}
     }
 
-    /// @dev Batch release. The harness is the only caller, so the second id
-    ///      joins the batch only when the harness is a party to it too;
-    ///      otherwise a one-element batch runs.
+    /// @dev Batch release. `executeExits` is atomic and every id in it is paid
+    ///      by the same caller — here always the harness — so the second id
+    ///      joins only when the harness is a party to it too; otherwise a
+    ///      one-element batch runs (still the batch entry point, still the
+    ///      `EmptyIds` guard's other side). Without the party check the pair
+    ///      reverts as a whole and the batch path degenerates into a no-op.
+    ///      Attempt counters are per call, matching the invariant handler.
     function executeMany(uint256 seedA, uint256 seedB) external {
         if (liveIds.length == 0) return;
         uint256 idA = liveIds[seedA % liveIds.length];
@@ -171,19 +177,20 @@ contract EchidnaExitDelayQueue {
         IExitDelayQueue.ExitRequest memory a = queue.getRequest(idA);
         if (a.status != IExitDelayQueue.ExitStatus.Queued) return;
         IExitDelayQueue.ExitRequest memory b = queue.getRequest(idB);
-        bool pair = idB != idA && b.status == IExitDelayQueue.ExitStatus.Queued;
+        bool pair = idB != idA && b.status == IExitDelayQueue.ExitStatus.Queued
+            && (b.originator == address(this) || b.owner == address(this));
         uint256[] memory ids = new uint256[](pair ? 2 : 1);
         ids[0] = idA;
         if (pair) ids[1] = idB;
         bool paused = queue.securityPerimeterPaused();
         address blockedA = _anyBlocked(a);
         address blockedB = pair ? _anyBlocked(b) : address(0);
-        if (paused) executedWhilePausedAttempts += ids.length;
-        if (blockedA != address(0)) executedWhileBlockedAttempts++;
-        if (blockedB != address(0)) executedWhileBlockedAttempts++;
+        if (paused) executedWhilePausedAttempts++;
+        if (blockedA != address(0) || blockedB != address(0)) executedWhileBlockedAttempts++;
         try queue.executeExits(ids) {
             batchExecutions++;
             batchExecutedIds += ids.length;
+            if (ids.length > 1) multiIdBatches++;
             _onPaid(a, paused, blockedA);
             if (pair) _onPaid(b, paused, blockedB);
         } catch {}
@@ -198,11 +205,40 @@ contract EchidnaExitDelayQueue {
         return address(0);
     }
 
+    /// @dev The party that would have made this recovery illegal. Recovery
+    ///      carries a stricter gate than a plain release: `altReceiver` is a
+    ///      fourth actor the queue also refuses to pay past.
+    function _anyBlockedForRecovery(IExitDelayQueue.ExitRequest memory r, address alt)
+        internal
+        view
+        returns (address)
+    {
+        address blocked = _anyBlocked(r);
+        if (blocked != address(0)) return blocked;
+        if (queue.blockStateOf(alt) != IExitDelayQueue.BlockState.None) return alt;
+        return address(0);
+    }
+
+    /// @dev Balance of `who` in the asset the request escrows; address(0) is
+    ///      native. Reading it either side of a payout is what names the actual
+    ///      recipient without trusting which branch the queue took.
+    function _balanceOf(address t, address who) internal view returns (uint256) {
+        return t == address(0) ? who.balance : token.balanceOf(who);
+    }
+
     /// @dev Ledger entry for a request a release actually paid, alongside the
     ///      two conditions that were meant to make the payout impossible.
     function _onPaid(IExitDelayQueue.ExitRequest memory r, bool paused, address blocked) internal {
         executedPayouts++;
-        paidTo[r.receiver] += r.amount;
+        _onPaidTo(r, r.receiver, paused, blocked);
+    }
+
+    /// @dev Payout ledger keyed on the address the value actually reached, which
+    ///      the recovery leg may choose at payout time.
+    function _onPaidTo(IExitDelayQueue.ExitRequest memory r, address recipient, bool paused, address blocked)
+        internal
+    {
+        paidTo[recipient] += r.amount;
         paidTotal += r.amount;
         if (paused) pausedPayouts++;
         if (blocked != address(0)) {
@@ -337,17 +373,40 @@ contract EchidnaExitDelayQueue {
     ///      execute. altReceiver is one of the plain EOA actors — never 0/this/
     ///      token/wrbtc — so the guard doesn't mask the leg (actors[0] is this
     ///      harness, hence the 1 + altSeed % 2 pick). Lock/block/pause/terminal
-    ///      failures revert and are caught (no state change). Property under test:
-    ///      recovery never breaks solvency or double-spends, whichever branch runs.
+    ///      failures revert and are caught (no state change).
+    ///
+    ///      This is a SECOND payout leg, so a success goes through the same
+    ///      payout ledger as a plain release: the pause and the four-actor block
+    ///      gate are snapshotted before the call, and the recipient is read off
+    ///      the balance the payout moved rather than assumed, because the leg
+    ///      pays `altReceiver` when the stored receiver bounces.
     function recoverStuck(uint256 idSeed, uint256 altSeed) external {
         if (liveIds.length == 0) return;
         uint256 id = liveIds[idSeed % liveIds.length];
         IExitDelayQueue.ExitRequest memory r = queue.getRequest(id);
         if (r.status != IExitDelayQueue.ExitStatus.Queued) return;
-        address altReceiver = actors[1 + (altSeed % 2)];
-        try queue.recoverStuckExit(id, altReceiver) {
-            _onTerminal(r);
+        _recover(id, r, actors[1 + (altSeed % 2)]);
+    }
+
+    /// @dev Split out of `recoverStuck` to keep both frames inside the stack limit.
+    function _recover(uint256 id, IExitDelayQueue.ExitRequest memory r, address alt) internal {
+        bool paused = queue.securityPerimeterPaused();
+        address blocked = _anyBlockedForRecovery(r, alt);
+        uint256 balBefore = _balanceOf(r.token, r.receiver);
+        try queue.recoverStuckExit(id, alt) {
+            recoveredPayouts++;
+            _onPaidTo(r, _recipientOf(r, alt, balBefore), paused, blocked);
         } catch {}
+    }
+
+    /// @dev Whoever the payout actually credited: the stored receiver when its
+    ///      balance moved by the request amount, otherwise the alternate.
+    function _recipientOf(IExitDelayQueue.ExitRequest memory r, address alt, uint256 balBefore)
+        internal
+        view
+        returns (address)
+    {
+        return _balanceOf(r.token, r.receiver) >= balBefore + r.amount ? r.receiver : alt;
     }
 
     function resolveBySIP(uint256 idSeed) external {
@@ -436,25 +495,28 @@ contract EchidnaExitDelayQueue {
     }
 
     /// @notice True once the campaign has entered every guarded path the three
-    ///         properties above are about. Not a property itself — a run that
-    ///         has not got there yet is not a failure. To have a campaign report
-    ///         its own coverage, add a property returning `!leversReached()`:
-    ///         it must be falsified, and the sequence shows how it got there.
+    ///         properties above are about: a release paid, a release tried with a
+    ///         party blocked, a release tried under the pause, a batch carrying
+    ///         more than one id, both by-request block variants, a route
+    ///         resolution, and a recovery payout. Not a property itself — a run
+    ///         that has not got there yet is not a failure. `EchidnaExitDelayQueueReach`
+    ///         turns it into one, so a campaign reports its own coverage.
     function leversReached() public view returns (bool) {
-        return executedPayouts > 0 && executedWhileBlockedAttempts > 0 && executedWhilePausedAttempts > 0
-            && byRequestBlocks > 0 && byRequestReceiverBlocks > 0 && batchExecutedIds > 1
-            && routeResolutions > 0;
+        return executedPayouts > 0 && recoveredPayouts > 0 && executedWhileBlockedAttempts > 0
+            && executedWhilePausedAttempts > 0 && byRequestBlocks > 0 && byRequestReceiverBlocks > 0
+            && multiIdBatches > 0 && routeResolutions > 0;
     }
 
     /// @dev The ledger and the reachability counters have to agree: a payout
-    ///      taken under a gate is one of the payouts, a batch never reports
-    ///      fewer ids than calls, and an unauthorized route resolution is one of
-    ///      the route resolutions. Drift here means the evidence above is
-    ///      measuring something other than what it claims.
+    ///      taken under a gate is one of the payouts (release or recovery), a
+    ///      batch never reports fewer ids than calls nor more multi-id batches
+    ///      than batches, and an unauthorized route resolution is one of the
+    ///      route resolutions. Drift here means the evidence above is measuring
+    ///      something other than what it claims.
     function echidna_lever_counters_consistent() external view returns (bool) {
-        return blockedPayouts <= executedPayouts && pausedPayouts <= executedPayouts
-            && blockedPayoutValue <= paidTotal && batchExecutions <= batchExecutedIds
-            && byRequestReceiverBlocks <= byRequestBlocks
-            && routeResolutionsWithoutBlacklist <= routeResolutions;
+        uint256 payouts = executedPayouts + recoveredPayouts;
+        return blockedPayouts <= payouts && pausedPayouts <= payouts && blockedPayoutValue <= paidTotal
+            && batchExecutions <= batchExecutedIds && multiIdBatches <= batchExecutions
+            && byRequestReceiverBlocks <= byRequestBlocks && routeResolutionsWithoutBlacklist <= routeResolutions;
     }
 }

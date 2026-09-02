@@ -145,18 +145,20 @@ contract ExitDelayQueueInvariant is Test {
 
     // ── operator levers ──────────────────────────────────────────
 
-    /// @notice No release ever paid a party the perimeter had blocked. The
-    ///         handler snapshots `blockStateOf` for originator, owner and
-    ///         receiver immediately before every `executeExit`/`executeExits`
-    ///         and credits the payout ledger on success; a payout taken while
-    ///         any of the three was Frozen or Blacklisted is recorded, not
-    ///         filtered out.
+    /// @notice No payout ever reached a party the perimeter had blocked. Both
+    ///         payout legs feed the same ledger: the handler snapshots
+    ///         `blockStateOf` for originator, owner and receiver immediately
+    ///         before every `executeExit`/`executeExits`, and for those three
+    ///         plus `altReceiver` before every `recoverStuckExit` — the stricter
+    ///         gate that leg carries. A payout taken while any of them was
+    ///         Frozen or Blacklisted is recorded, not filtered out.
     function invariant_blocked_party_never_paid() public view {
         assertEq(handler.blockedPayouts(), 0, "a release paid out while a party was blocked");
         assertEq(handler.blockedPayoutValue(), 0, "value left the queue while a party was blocked");
         assertEq(handler.blockedPayoutParty(), address(0), "blocked party was paid");
         // Every credit in the ledger names one of the three known actors: the
-        // stored receiver is immutable, so a release can never pay elsewhere.
+        // stored receiver is immutable and the recovery leg's alternate is drawn
+        // from the same set, so no payout can land outside it.
         uint256 credited;
         for (uint256 i = 0; i < 3; ++i) {
             credited += handler.paidTo(handler.actors(i));
@@ -164,11 +166,12 @@ contract ExitDelayQueueInvariant is Test {
         assertEq(credited, handler.paidTotal(), "a release paid an address that is not a request party");
     }
 
-    /// @notice A paused perimeter pays nobody. The handler snapshots
-    ///         `securityPerimeterPaused()` before each release and counts any
-    ///         release that still went through.
+    /// @notice A paused perimeter pays nobody, down either payout leg. The
+    ///         handler snapshots `securityPerimeterPaused()` before each release
+    ///         and each stuck-exit recovery, and counts any payout that still
+    ///         went through.
     function invariant_pause_stops_payouts() public view {
-        assertEq(handler.pausedPayouts(), 0, "a release paid out while the perimeter was paused");
+        assertEq(handler.pausedPayouts(), 0, "a payout went through while the perimeter was paused");
     }
 
     /// @notice Recovery-away along a route only ever moved funds whose
@@ -213,23 +216,33 @@ contract ExitDelayQueueInvariant is Test {
     ///         free. This drives a short scripted campaign through the same
     ///         handler and proves every guarded path was entered: a release was
     ///         attempted under the pause, a release was attempted with a blocked
-    ///         party, a two-id batch was released, both by-request block
-    ///         variants ran, and both routes resolved funds away. The guard
-    ///         counters are then still zero — the invariants hold on a run that
-    ///         demonstrably reached them.
+    ///         party, a two-id batch was released, the stuck-exit recovery leg
+    ///         paid out, both by-request block variants ran, and both routes
+    ///         resolved funds away. The guard counters are then still zero — the
+    ///         invariants hold on a run that demonstrably reached them.
     function test_handler_reaches_operator_levers() public {
-        // Three ERC20 exits and one native exit, all sharing originator/owner so
+        // Four ERC20 exits and one native exit, all sharing originator/owner so
         // one caller can release a batch of them.
         handler.recordErc20(uint128(1e18), 0, 0, 0);
         handler.recordErc20(uint128(1e18), 0, 0, 0);
         handler.recordErc20(uint128(1e18), 0, 0, 0);
         handler.recordNative(uint128(1e18), 0, 0, 0);
+        handler.recordErc20(uint128(1e18), 0, 0, 0);
 
         // Batch release of two ids in one call.
         handler.executeMany(0, 1);
         assertEq(handler.batchExecutions(), 1, "batch release never ran");
         assertEq(handler.batchExecutedIds(), 2, "batch release did not carry two ids");
+        assertEq(handler.multiIdBatches(), 1, "no batch carried more than one id");
         assertGt(handler.executedPayouts(), 0, "no release was ever paid");
+
+        // The second payout leg: stuck-exit recovery, which shares the pause
+        // gate, carries a stricter block gate, and may pay an address the
+        // request never named. It has to reach the same payout ledger.
+        uint256 paidBefore = handler.paidTotal();
+        handler.recoverStuck(4, 0);
+        assertEq(handler.recoveredPayouts(), 1, "stuck-exit recovery never paid out");
+        assertGt(handler.paidTotal(), paidBefore, "recovery payout never reached the ledger");
 
         // A release attempted while the perimeter is paused.
         handler.pause(true);
