@@ -36,6 +36,14 @@ require_clean_src() {
   done
 }
 
+case "$PHASE" in
+  all | foundry | echidna) ;;
+  *)
+    echo "release-gates: unknown phase '$PHASE' (expected all, foundry or echidna)" >&2
+    exit 2
+    ;;
+esac
+
 foundry_rc="skipped"
 echidna_rc="skipped"
 
