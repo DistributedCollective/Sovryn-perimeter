@@ -57,16 +57,39 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     //   254        _actorPolicy             mapping head
     //   255        _subProductKeys          mapping head (enumeration index)
     //   256        _actorKeys               mapping head (enumeration index)
-    //   257        ExitFeeController.admin  (address, 20 bytes; slot offset 0,
-    //                                        12 bytes free).
-    //   258 .. 300 __gap[43] -- preserves the OZ-style 50-slot namespace
-    //                           (50 - 7 own slots used).
     //
-    // Upgrades that add storage to THIS contract MUST consume from __gap
-    // and reduce its length by exactly the number of slots added. They
-    // MUST NOT reorder, insert, or change the type of any preceding slot.
+    //   257        admin (20 bytes, offset 0) -- alone; the remaining
+    //              12 bytes of the slot are intentionally unused.
+    //
+    //   258        _surfaceBypass           mapping head
+    //   259        _subProductBypass        mapping head
+    //   260        _actorBypass             mapping head
+    //   261        _surfaceBypassKeys._values  (Bytes32Set array head)   ┐ 2 slots
+    //   262        _surfaceBypassKeys._indexes (mapping head)            ┘
+    //   263        _subProductBypassKeys    mapping head (enumeration index)
+    //   264        _actorBypassKeys         mapping head (enumeration index)
+    //   265        _passthroughActor        nested-mapping head (surface-scoped)
+    //   266        _passthroughKeys         mapping head (enumeration index)
+    //   267        _bypassSurfaceIds._values  (Bytes32Set array head)    ┐ 2 slots
+    //   268        _bypassSurfaceIds._indexes (mapping head)             ┘
+    //   269        _passthroughSurfaceIds._values  (Bytes32Set array head) ┐ 2 slots
+    //   270        _passthroughSurfaceIds._indexes (mapping head)          ┘
+    //   271        securityPerimeterEnabled (1 byte) + globalDelaySeconds
+    //              (4 bytes) -- PACKED; 27 bytes of the slot are unused.
+    //   272 .. 300 __gap[29] -- preserves the OZ-style 50-slot namespace
+    //                           (50 - 21 own slots used).
+    //
+    // Own slots: 251 + 252..256 + 257 + 258..271 = 21, so __gap = 50 - 21 = 29
+    // and the namespace ends at slot 300.
+    //
+    // Upgrades that add storage to THIS contract MUST consume from __gap and
+    // reduce its length by exactly the number of slots added. They MUST NOT
+    // reorder, insert, or change the type of any preceding slot. In
+    // particular, nothing may be declared before `admin`, and nothing may be
+    // packed into the free bytes of its slot.
 
     using EnumerableSet for EnumerableSet.AddressSet;
+    using EnumerableSet for EnumerableSet.Bytes32Set;
 
     /// @notice Global enablement flag. When false, every `quoteExitFee`
     ///         call returns `INACTIVE` regardless of per-surface configuration.
@@ -130,16 +153,116 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     /// @notice Fast operational guardian. A SINGLE stored address checked by
     ///         `onlyAdminOrOwner` -- NOT an OZ AccessControl role (the
     ///         controller stays single-Owner for configuration). It authorizes
-    ///         only the operational levers `setExitFeeEnabled` and
-    ///         `setFeeReceiver`; policy setters, removals, `setAdmin` itself,
-    ///         and UUPS upgrades stay `onlyOwner`. MAY equal the owner --
-    ///         nothing requires the two authorities to be distinct. Unset
-    ///         (`address(0)`) until the owner appoints one; while unset,
-    ///         `onlyAdminOrOwner` admits only the owner.
+    ///         the perimeter kill switch and the operational levers
+    ///         `setExitFeeEnabled` and `setFeeReceiver`; policy setters,
+    ///         removals, `setAdmin` itself, and UUPS upgrades stay `onlyOwner`.
+    ///         MAY equal the owner -- nothing requires the two authorities to
+    ///         be distinct. Unset (`address(0)`) until the owner appoints one;
+    ///         while unset, `onlyAdminOrOwner` admits only the owner.
+    /// @dev    Occupies slot 257 at offset 0, alone. Its position is fixed:
+    ///         nothing may be declared before it, and nothing may be packed
+    ///         into the free bytes beside it.
     address public admin;
 
+    // ─── Delay policy state ─────────────────────────────────────────────
+
+    /// @dev Surface-tier delay bypass. Key: `surfaceId`. Value:
+    ///      `DelayBypassPolicy {active, bypass}`. Mirrors `_surfacePolicy`'s
+    ///      shape but is INDEPENDENT of it — the delay resolver never
+    ///      reads the fee `surfacePolicy.active`.
+    mapping(bytes32 => IExitFeeController.DelayBypassPolicy) internal _surfaceBypass;
+
+    /// @dev Sub-product-tier delay bypass. Outer key `surfaceId`, inner key
+    ///      `subProduct` (non-zero). Wins over the surface tier when active.
+    mapping(bytes32 => mapping(address => IExitFeeController.DelayBypassPolicy)) internal _subProductBypass;
+
+    /// @dev Actor-tier delay bypass (most specific). Outer key `surfaceId`,
+    ///      inner key `actor` (non-zero) — evaluated on `effOrig` ONLY (there is
+    ///      NO global actor bypass). Wins over sub-product and surface.
+    mapping(bytes32 => mapping(address => IExitFeeController.DelayBypassPolicy)) internal _actorBypass;
+
+    /// @dev Enumeration index for the SURFACE-tier bypass. A single
+    ///      flat `Bytes32Set` of every `surfaceId` with a configured surface bypass
+    ///      — surface bypasses are keyed by `surfaceId` alone and are NOT scoped by
+    ///      a parent surface, so `surfaceBypassKeys()` takes NO argument. Backed on
+    ///      chain so `InspectController` / monitoring can dump every surface bypass
+    ///      (no unenumerable zero-delay state). Retains soft-retired entries
+    ///      (`active=false`); `removeSurfaceBypass` hard-removes.
+    EnumerableSet.Bytes32Set internal _surfaceBypassKeys;
+
+    /// @dev Enumeration indexes for the sub-product / actor bypass tiers (mirror
+    ///      `_subProductKeys` / `_actorKeys`). Entries are retained on
+    ///      soft-retire (`active=false`); use `removeSubProductBypass` /
+    ///      `removeActorBypass` for hard removal. Consumed by `InspectController`.
+    mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductBypassKeys;
+    mapping(bytes32 => EnumerableSet.AddressSet) internal _actorBypassKeys;
+
+    /// @dev Surface-scoped passthrough-actor registry. A passthrough
+    ///      registered for `surfaceId` resolves to the `receiver` in
+    ///      `effectiveActor`; it NEVER collapses identities globally — the
+    ///      wrapper is registered only under `SURFACE_LENDING_LENDER_WITHDRAW`,
+    ///      so margin/Zero (no entry) keep `effOrig = raw`, `effOwner = owner`.
+    ///      Co-located here (not in the escrow queue) so the hook normalizes
+    ///      WITHOUT touching the queue, keeping the kill switch queue-independent
+    ///     .
+    mapping(bytes32 => mapping(address => bool)) internal _passthroughActor;
+
+    /// @dev Enumeration index for the surface-scoped passthrough registry.
+    ///      Outer key `surfaceId`, values = every passthrough
+    ///      address registered under it. Unlike the bypass key-sets this is kept
+    ///      exact-to-live: an address is added on register and DROPPED on
+    ///      deregister (`setPassthroughActor(.., false)`), because a passthrough is
+    ///      a boolean membership with no soft-retire state to preserve. Gives the
+    ///      passthrough registry the same enumerability as the bypass tiers (no
+    ///      events-only blind spot on a security-critical registry).
+    mapping(bytes32 => EnumerableSet.AddressSet) internal _passthroughKeys;
+
+    /// @dev ANY-TIER-TOUCHED master surface-id set for delay bypasses.
+    ///      Every bypass WRITER — `_writeSurfaceBypass` (via
+    ///      `setSurfaceBypass`), `_writeSubProductBypass`, `_writeActorBypass` —
+    ///      records its `surfaceId` here, so a surface that carries ONLY a
+    ///      sub-product- or actor-tier bypass (the most common exemption shape,
+    ///       actor tier) is discoverable even though it was never passed to
+    ///      `setSurfaceBypass`. This is the root-cause fix: the per-tier key-sets
+    ///      (`_surfaceBypassKeys` / `_subProductBypassKeys` / `_actorBypassKeys`)
+    ///      only tell you WHICH keys exist UNDER a known surfaceId — they cannot
+    ///      by themselves enumerate the surfaceIds. `bypassSurfaceIds()` closes
+    ///      that gap so NO zero-delay / identity config is invisible to
+    ///      `InspectController`. Entries are NEVER dropped (soft-retire retention),
+    ///      so a `removeSurfaceBypass` while sub/actor entries remain live does not
+    ///      remove the id from discovery — the inspector still probes every tier.
+    EnumerableSet.Bytes32Set internal _bypassSurfaceIds;
+
+    /// @dev ANY-TIER-TOUCHED master surface-id set for the passthrough registry.
+    ///      `setPassthroughActor(surfaceId, .., true)` records
+    ///      the `surfaceId` here, so a passthrough-only surface (no bypass entry,
+    ///      not a named fee surface) is still enumerable. Like the passthrough
+    ///      key-set it is retention-only at the SURFACE level: a surfaceId stays
+    ///      recorded even after every passthrough under it is deregistered (the
+    ///      per-surface `_passthroughKeys` set going empty is the live signal;
+    ///      keeping the surfaceId costs one slot and guarantees the inspector never
+    ///      loses the probe point). `passthroughSurfaceIds()` exposes it.
+    EnumerableSet.Bytes32Set internal _passthroughSurfaceIds;
+
+    /// @notice Global kill switch for the DELAY perimeter. Independent of
+    ///         `exitFeeEnabled`: turning fees off does NOT disable the
+    ///         perimeter, and a fee-inactive surface can still be delay-active.
+    ///         When false, `quoteExitDelayFor` short-circuits to
+    ///         `(0, raw, owner)` without consulting the bypass tiers, the
+    ///         passthrough registry, or the queue.
+    bool public securityPerimeterEnabled;
+
+    /// @notice One delay for EVERY surface (uint32 gives ~136 years of head
+    ///         room). There is no per-surface delay *duration* -- only the
+    ///         per-tier bypass toggles above exempt a surface, sub-product or
+    ///         actor. The `>= queue.minimumDelaySeconds` relationship is a
+    ///         liveness invariant enforced PER-REQUEST in the queue, not a
+    ///         cross-contract setter guard here: the controller never reads or
+    ///         calls the queue.
+    uint32 public globalDelaySeconds;
+
     // aderyn-ignore-next-line(unused-state-variable)
-    uint256[43] private __gap;
+    uint256[29] private __gap;
 
     // ─── Custom errors ──────────────────────────────────────────────────
 
@@ -150,24 +273,17 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     error LengthMismatch();
     error OwnershipCannotBeRenounced();
     error UpgradeImplZero();
+
+    // ─── Custom errors (admin role) ─────────────────────────────────────
     error NotAdminOrOwner(address caller); // onlyAdminOrOwner gate
     error AdminZero(); //                     setAdmin(address(0))
 
-    // ─── Events (admin role) ────────────────────────────────────────────
-    //
-    // Declared on the implementation rather than in IExitFeeController:
-    // that file is the cross-pragma interface consumed by product code and
-    // mirrored by the v0_4 variant, and the two must stay ABI-identical.
-    // The admin role is an owner-side surface that product code never
-    // touches, so the shared interface stays untouched.
-
-    event AdminSet(address indexed admin);
-
     // ─── Modifiers ──────────────────────────────────────────────────────
 
-    /// @dev The `admin` guardian OR the `Ownable2Step` owner. Gates only
-    ///      the operational levers (`setExitFeeEnabled`, `setFeeReceiver`);
-    ///      every other setter stays `onlyOwner`.
+    /// @dev The `Admin` guardian OR the `Ownable2Step` owner. Gates the
+    ///      perimeter kill switch and — since the core
+    ///      merge — the fee levers `setExitFeeEnabled` /
+    ///      `setFeeReceiver`. All other setters are `onlyOwner`.
     modifier onlyAdminOrOwner() {
         if (msg.sender != admin && msg.sender != owner()) revert NotAdminOrOwner(msg.sender);
         _;
@@ -217,7 +333,12 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         revert OwnershipCannotBeRenounced();
     }
 
-    // ─── Admin: global state ────────────────────────────────────────────
+    // NOTE the
+    // `_transferOwnership` chokepoint override (Admin != Owner enforced on
+    // the ownership side) was REMOVED together with `setAdmin`'s
+    // owner-equality check — admin == owner is a supported shape (the
+    // governance Safe holds both roles at launch). The queue's counterpart
+    // was removed in the same change.
 
     /// @notice Appoint (or rotate) the operational guardian checked by
     ///         `onlyAdminOrOwner`. Owner-only. `address(0)` is rejected --
@@ -231,6 +352,8 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         admin = newAdmin;
         emit AdminSet(newAdmin);
     }
+
+    // ─── Admin: global state ────────────────────────────────────────────
 
     /// @notice Flip the global kill switch. While `false`, every
     ///         `quoteExitFee` returns `INACTIVE` and product hooks no-op.
@@ -254,6 +377,37 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         if (newReceiver == address(0)) revert FeeReceiverZero();
         feeReceiver = newReceiver;
         emit FeeReceiverSet(newReceiver);
+    }
+
+    // ─── Admin: delay global state ───────────────
+
+    /// @notice Flip the DELAY perimeter kill switch. `onlyAdminOrOwner`
+    ///         (the fee levers joined this gate in) — both
+    ///         directions, for sub-minute incident response. Independent of
+    ///         `exitFeeEnabled`:
+    ///         disabling fees does NOT disable the perimeter and vice-versa.
+    ///         Accepted residual: a rogue Admin can DISABLE the perimeter (a
+    ///         protocol-wide fail-OPEN delay removal) — the deliberate tradeoff.
+    /// @param  enabled Target state for the perimeter.
+    // aderyn-ignore-next-line(centralization-risk)
+    function setSecurityPerimeterEnabled(bool enabled) external onlyAdminOrOwner {
+        securityPerimeterEnabled = enabled;
+        emit SecurityPerimeterEnabledSet(enabled);
+    }
+
+    /// @notice Set the single global delay applied whenever a delay is imposed.
+    ///         Owner-only. The `>= queue.minimumDelaySeconds` floor
+    ///         is a documented liveness invariant enforced PER-REQUEST in the
+    ///         queue and by a deploy-script assertion — NOT a
+    ///         cross-contract setter guard, so the controller never reads or
+    ///         calls the queue (kill-switch queue-independence). A value
+    ///         below the floor would self-brick every non-bypassed exit
+    ///         (fail-closed) but can NEVER rush a request below the floor.
+    /// @param  seconds_ Delay in seconds (uint32; 0 is allowed and disables the
+    ///         delay for all non-bypassed exits, equivalent to a global bypass).
+    function setGlobalDelaySeconds(uint32 seconds_) external onlyOwner {
+        globalDelaySeconds = seconds_;
+        emit GlobalDelaySet(seconds_);
     }
 
     // ─── Admin: policy setters ──────────────────────────────────────────
@@ -435,6 +589,216 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         }
     }
 
+    // ─── Admin: delay bypass tiers ────────────────────
+    //
+    // Mirrors the fee-tier setters but on `DelayBypassPolicy`. A
+    // `{active:true, bypass:true}` entry EXEMPTS the surface/subProduct/actor
+    // (d = 0, instant); a `{active:true, bypass:false}` entry FORCES the global
+    // delay (overriding a broader bypass). `{active:false}` falls through. The
+    // enumeration keys retain soft-retired entries; use the removers for hard
+    // removal. Precedence and the truth table live in `_resolveDelay` below.
+
+    /// @notice Configure (or update) the surface-tier delay bypass for
+    ///         `surfaceId`. Overwriting is idempotent.
+    function setSurfaceBypass(bytes32 surfaceId, IExitFeeController.DelayBypassPolicy calldata policy)
+        external
+        onlyOwner
+    {
+        _writeSurfaceBypass(surfaceId, policy);
+    }
+
+    function _writeSurfaceBypass(bytes32 surfaceId, IExitFeeController.DelayBypassPolicy calldata policy)
+        internal
+    {
+        _surfaceBypass[surfaceId] = policy;
+        // Per-tier enumeration index. Idempotent: add returns
+        // false if already present. Retained on soft-retire (`active=false`).
+        // aderyn-ignore-next-line(unchecked-return)
+        _surfaceBypassKeys.add(surfaceId);
+        // ANY-TIER-TOUCHED master set: record the surfaceId so the
+        // inspector discovers it regardless of which tier configured it.
+        // aderyn-ignore-next-line(unchecked-return)
+        _bypassSurfaceIds.add(surfaceId);
+        emit SurfaceBypassSet(surfaceId, policy.active, policy.bypass);
+    }
+
+    /// @notice Hard-remove a surface-tier delay bypass: clears the stored policy
+    ///         and drops the surfaceId from the enumeration index. Idempotent --
+    ///         a remove for a surfaceId not currently in the index is a successful
+    ///         no-op (no event, no revert). To temporarily disable while keeping it
+    ///         visible in the inspector, use `setSurfaceBypass(id, {false, false})`.
+    function removeSurfaceBypass(bytes32 surfaceId) external onlyOwner {
+        if (_surfaceBypassKeys.remove(surfaceId)) {
+            delete _surfaceBypass[surfaceId];
+            emit SurfaceBypassRemoved(surfaceId);
+        }
+    }
+
+    /// @notice Configure (or update) a sub-product-tier delay bypass. Records
+    ///         the address in the enumeration index. `subProduct` non-zero.
+    function setSubProductBypass(
+        bytes32 surfaceId,
+        address subProduct,
+        IExitFeeController.DelayBypassPolicy calldata policy
+    ) external onlyOwner {
+        _writeSubProductBypass(surfaceId, subProduct, policy);
+    }
+
+    /// @notice Batch variant of `setSubProductBypass`. Reverts on length
+    ///         mismatch or a zero address; a revert mid-batch undoes the batch.
+    function setSubProductBypasses(
+        bytes32 surfaceId,
+        address[] calldata subProducts,
+        IExitFeeController.DelayBypassPolicy[] calldata policies
+    ) external onlyOwner {
+        uint256 len = subProducts.length;
+        if (len != policies.length) revert LengthMismatch();
+        for (uint256 i = 0; i < len; ++i) {
+            _writeSubProductBypass(surfaceId, subProducts[i], policies[i]);
+        }
+    }
+
+    /// @notice Configure (or update) an actor-tier delay bypass (most specific;
+    ///         evaluated on `effOrig`). `actor` non-zero.
+    function setActorBypass(
+        bytes32 surfaceId,
+        address actor,
+        IExitFeeController.DelayBypassPolicy calldata policy
+    ) external onlyOwner {
+        _writeActorBypass(surfaceId, actor, policy);
+    }
+
+    /// @notice Batch variant of `setActorBypass`. Same revert semantics as
+    ///         `setSubProductBypasses`.
+    function setActorBypasses(
+        bytes32 surfaceId,
+        address[] calldata actors,
+        IExitFeeController.DelayBypassPolicy[] calldata policies
+    ) external onlyOwner {
+        uint256 len = actors.length;
+        if (len != policies.length) revert LengthMismatch();
+        for (uint256 i = 0; i < len; ++i) {
+            _writeActorBypass(surfaceId, actors[i], policies[i]);
+        }
+    }
+
+    function _writeSubProductBypass(
+        bytes32 surfaceId,
+        address subProduct,
+        IExitFeeController.DelayBypassPolicy calldata policy
+    ) internal {
+        if (subProduct == address(0)) revert SubProductZero();
+        _subProductBypass[surfaceId][subProduct] = policy;
+        // aderyn-ignore-next-line(unchecked-return)
+        _subProductBypassKeys[surfaceId].add(subProduct);
+        // ANY-TIER-TOUCHED master set: a sub-product-only bypass
+        // under an arbitrary surfaceId is otherwise undiscoverable — record it.
+        // aderyn-ignore-next-line(unchecked-return)
+        _bypassSurfaceIds.add(surfaceId);
+        emit SubProductBypassSet(surfaceId, subProduct, policy.active, policy.bypass);
+    }
+
+    function _writeActorBypass(
+        bytes32 surfaceId,
+        address actor,
+        IExitFeeController.DelayBypassPolicy calldata policy
+    ) internal {
+        if (actor == address(0)) revert ActorZero();
+        _actorBypass[surfaceId][actor] = policy;
+        // aderyn-ignore-next-line(unchecked-return)
+        _actorBypassKeys[surfaceId].add(actor);
+        // ANY-TIER-TOUCHED master set: the actor tier is the MOST
+        // COMMON exemption shape — an actor-only bypass with no prior
+        // setSurfaceBypass MUST still surface the id to the inspector.
+        // aderyn-ignore-next-line(unchecked-return)
+        _bypassSurfaceIds.add(surfaceId);
+        emit ActorBypassSet(surfaceId, actor, policy.active, policy.bypass);
+    }
+
+    /// @notice Hard-remove a sub-product-tier delay bypass: clears the stored
+    ///         policy and drops it from the enumeration index. Idempotent.
+    function removeSubProductBypass(bytes32 surfaceId, address subProduct) external onlyOwner {
+        _removeSubProductBypass(surfaceId, subProduct);
+    }
+
+    /// @notice Batch variant of `removeSubProductBypass`.
+    function removeSubProductBypasses(bytes32 surfaceId, address[] calldata subProducts) external onlyOwner {
+        uint256 len = subProducts.length;
+        for (uint256 i = 0; i < len; ++i) {
+            _removeSubProductBypass(surfaceId, subProducts[i]);
+        }
+    }
+
+    /// @notice Hard-remove an actor-tier delay bypass. Idempotent.
+    function removeActorBypass(bytes32 surfaceId, address actor) external onlyOwner {
+        _removeActorBypass(surfaceId, actor);
+    }
+
+    /// @notice Batch variant of `removeActorBypass`.
+    function removeActorBypasses(bytes32 surfaceId, address[] calldata actors) external onlyOwner {
+        uint256 len = actors.length;
+        for (uint256 i = 0; i < len; ++i) {
+            _removeActorBypass(surfaceId, actors[i]);
+        }
+    }
+
+    function _removeSubProductBypass(bytes32 surfaceId, address subProduct) internal {
+        if (subProduct == address(0)) revert SubProductZero();
+        if (_subProductBypassKeys[surfaceId].remove(subProduct)) {
+            delete _subProductBypass[surfaceId][subProduct];
+            emit SubProductBypassRemoved(surfaceId, subProduct);
+        }
+    }
+
+    function _removeActorBypass(bytes32 surfaceId, address actor) internal {
+        if (actor == address(0)) revert ActorZero();
+        if (_actorBypassKeys[surfaceId].remove(actor)) {
+            delete _actorBypass[surfaceId][actor];
+            emit ActorBypassRemoved(surfaceId, actor);
+        }
+    }
+
+    // ─── Admin: surface-scoped passthrough registry ───────────────
+
+    /// @notice Register/deregister a surface-scoped passthrough actor.
+    ///         A passthrough registered for `surfaceId` normalizes to the
+    ///         `receiver` in `effectiveActor` / `quoteExitDelayFor`. Owner-only
+    ///         and — because `bypass=true` is equivalent to zero delay and a
+    ///         passthrough rewrites the block key — as security-critical as the
+    ///         source-registry. NEVER collapses identities globally: the
+    ///         wrapper is registered ONLY under `SURFACE_LENDING_LENDER_WITHDRAW`,
+    ///         so margin/Zero keep their raw identities.
+    /// @param  surfaceId     Operation-kind identifier.
+    /// @param  a             Passthrough contract (e.g. the RBTCWrapperProxy).
+    /// @param  isPassthrough True to register, false to deregister.
+    // aderyn-ignore-next-line(centralization-risk)
+    function setPassthroughActor(bytes32 surfaceId, address a, bool isPassthrough) external onlyOwner {
+        if (a == address(0)) revert ActorZero();
+        _passthroughActor[surfaceId][a] = isPassthrough;
+        // Keep the enumeration index exact-to-live: a passthrough is
+        // a boolean membership with no soft-retire state, so add on register and
+        // drop on deregister. add/remove return values are intentionally unchecked
+        // (idempotent — a repeat register or a deregister of an absent entry is a
+        // successful no-op that still emits, matching the setter's overwrite
+        // semantics).
+        if (isPassthrough) {
+            // aderyn-ignore-next-line(unchecked-return)
+            _passthroughKeys[surfaceId].add(a);
+            // ANY-TIER-TOUCHED master set: record the surfaceId on
+            // register so a passthrough-only surface (no bypass entry, not a named
+            // fee surface) is still a probe point for the inspector. Surface-level
+            // retention: the id stays even after every passthrough under it is
+            // deregistered — the per-surface `_passthroughKeys` set going empty is
+            // the live signal, and keeping the id guarantees the probe point.
+            // aderyn-ignore-next-line(unchecked-return)
+            _passthroughSurfaceIds.add(surfaceId);
+        } else {
+            // aderyn-ignore-next-line(unchecked-return)
+            _passthroughKeys[surfaceId].remove(a);
+        }
+        emit PassthroughActorSet(surfaceId, a, isPassthrough);
+    }
+
     // ─── Policy views ───────────────────────────────────────────────────
 
     /// @notice Surface tier (gate + default rate) for `surfaceId`. Returns
@@ -486,6 +850,103 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     /// @return Snapshot of every configured actor address.
     function actorKeys(bytes32 surfaceId) external view returns (address[] memory) {
         return _actorKeys[surfaceId].values();
+    }
+
+    // ─── Delay views ──────────────────────────────────
+
+    /// @notice Surface-tier delay bypass for `surfaceId`. Zero-initialised if
+    ///         never configured (`{active:false, bypass:false}`).
+    function surfaceBypass(bytes32 surfaceId)
+        external
+        view
+        returns (IExitFeeController.DelayBypassPolicy memory)
+    {
+        return _surfaceBypass[surfaceId];
+    }
+
+    /// @notice Sub-product-tier delay bypass for `(surfaceId, subProduct)`.
+    function subProductBypass(bytes32 surfaceId, address subProduct)
+        external
+        view
+        returns (IExitFeeController.DelayBypassPolicy memory)
+    {
+        return _subProductBypass[surfaceId][subProduct];
+    }
+
+    /// @notice Actor-tier delay bypass for `(surfaceId, actor)`.
+    function actorBypass(bytes32 surfaceId, address actor)
+        external
+        view
+        returns (IExitFeeController.DelayBypassPolicy memory)
+    {
+        return _actorBypass[surfaceId][actor];
+    }
+
+    /// @notice Every surfaceId configured in the surface-tier delay-bypass index.
+    ///         Takes NO argument — surface bypasses are keyed by
+    ///         `surfaceId` alone, NOT scoped by a parent surface. Entries are not
+    ///         removed when a bypass is set inactive; pair each id with
+    ///         `surfaceBypass(id)` to see the live state, or use
+    ///         `removeSurfaceBypass(id)` for hard removal. Intended for
+    ///         `InspectController` / monitoring so there is no unenumerable
+    ///         zero-delay state.
+    /// @return Snapshot of every configured surface-bypass surfaceId.
+    function surfaceBypassKeys() external view returns (bytes32[] memory) {
+        return _surfaceBypassKeys.values();
+    }
+
+    /// @notice Every sub-product configured under `surfaceId` in the delay
+    ///         bypass index. Same retention semantics as `subProductKeys`.
+    function subProductBypassKeys(bytes32 surfaceId) external view returns (address[] memory) {
+        return _subProductBypassKeys[surfaceId].values();
+    }
+
+    /// @notice Every actor configured under `surfaceId` in the delay bypass
+    ///         index. Same retention semantics as `actorKeys`.
+    function actorBypassKeys(bytes32 surfaceId) external view returns (address[] memory) {
+        return _actorBypassKeys[surfaceId].values();
+    }
+
+    /// @notice ANY-TIER-TOUCHED master set: EVERY surfaceId that has a bypass
+    ///         entry at ANY tier — surface, sub-product, OR actor.
+    ///         This is the discovery driver for `InspectController`: unlike
+    ///         `surfaceBypassKeys()` (surface-tier writes only), this records the
+    ///         surfaceId from `setSurfaceBypass`, `setSubProductBypass`, AND
+    ///         `setActorBypass`, so a surface carrying ONLY a sub-product- or
+    ///         actor-tier bypass (the most common exemption shape) is never missed.
+    ///         Retention-only: entries are never dropped, so a `removeSurfaceBypass`
+    ///         while sub/actor entries remain live keeps the id in discovery — the
+    ///         inspector re-probes every tier per id and shows the live state.
+    /// @return Snapshot of every surfaceId touched by any bypass tier.
+    function bypassSurfaceIds() external view returns (bytes32[] memory) {
+        return _bypassSurfaceIds.values();
+    }
+
+    /// @notice ANY-TIER-TOUCHED master set for the passthrough registry: every
+    ///         surfaceId under which a passthrough has been registered.
+    ///         Drives `InspectController`'s passthrough dump so a
+    ///         passthrough-only surface (no bypass entry, not a named fee surface)
+    ///         is still enumerable. Surface-level retention: an id stays recorded
+    ///         even after every passthrough under it is deregistered.
+    /// @return Snapshot of every surfaceId touched by the passthrough registry.
+    function passthroughSurfaceIds() external view returns (bytes32[] memory) {
+        return _passthroughSurfaceIds.values();
+    }
+
+    /// @notice Every passthrough address registered under `surfaceId`.
+    ///         Exact-to-live: an address enters on `setPassthroughActor(.., true)`
+    ///         and is dropped on `setPassthroughActor(.., false)`. Gives the
+    ///         security-critical passthrough registry the same on-chain
+    ///         enumerability as the bypass tiers (no events-only blind spot).
+    /// @param  surfaceId See `setSurfacePolicy`.
+    /// @return Snapshot of every live passthrough address under `surfaceId`.
+    function passthroughKeys(bytes32 surfaceId) external view returns (address[] memory) {
+        return _passthroughKeys[surfaceId].values();
+    }
+
+    /// @notice Whether `a` is a surface-scoped passthrough for `surfaceId`.
+    function passthroughActor(bytes32 surfaceId, address a) external view returns (bool) {
+        return _passthroughActor[surfaceId][a];
     }
 
     // ─── Quote ──────────────────────────────────────────────────────────
@@ -577,5 +1038,88 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
 
         // Surface fallback (always active here, since we checked above).
         return surface;
+    }
+
+    // ─── Delay quote + resolution ─────────────────────
+
+    /// @inheritdoc IExitFeeController
+    function effectiveActor(bytes32 surfaceId, address raw, address receiver) public view returns (address) {
+        // A passthrough registered FOR THIS SURFACE resolves to the receiver;
+        // otherwise identity. Never collapses identities globally — a
+        // surface with no passthrough entry returns `raw` unchanged, so margin
+        // and Zero keep their real originator/owner.
+        return _passthroughActor[surfaceId][raw] ? receiver : raw;
+    }
+
+    /// @inheritdoc IExitFeeController
+    function quoteExitDelayFor(
+        address rawOriginator,
+        address owner_,
+        address receiver,
+        bytes32 surfaceId,
+        address subProduct
+    ) external view returns (uint32 d, address effOrig, address effOwner) {
+        // KILL-SWITCH SHORT-CIRCUIT FIRST: a disabled perimeter pays
+        // direct WITHOUT consulting the passthrough registry or the queue — the
+        // liveness escape. Returns RAW identities; the hook must ignore them and
+        // pay direct whenever d == 0, so the raw identities never record.
+        if (!securityPerimeterEnabled) {
+            return (0, rawOriginator, owner_);
+        }
+
+        // Resolve the surface-scoped effective identities, then quote on
+        // effOrig, so the quote and the record share ONE identity.
+        effOrig = effectiveActor(surfaceId, rawOriginator, receiver);
+        effOwner = effectiveActor(surfaceId, owner_, receiver);
+        d = _resolveDelay(surfaceId, subProduct, effOrig);
+    }
+
+    /// @inheritdoc IExitFeeController
+    function quoteExitDelay(bytes32 surfaceId, address subProduct, address effectiveActor_)
+        external
+        view
+        returns (uint32)
+    {
+        // Handles the disabled-perimeter case identically (returns 0 when the
+        // perimeter is off) so an off-chain caller of the inner view never gets
+        // a non-zero delay while the perimeter is disabled. Callers pass an
+        // ALREADY-effective actor (never a raw wrapper).
+        if (!securityPerimeterEnabled) return 0;
+        return _resolveDelay(surfaceId, subProduct, effectiveActor_);
+    }
+
+    /// @dev The 3-tier delay resolver (truth table). Evaluated on
+    ///      the EFFECTIVE originator. Precedence mirrors the fee resolver —
+    ///      actor > subProduct > surface, most-specific-*active*-wins — but the
+    ///      SOLE gate is `securityPerimeterEnabled` (checked by the callers
+    ///      above): the delay resolver is INDEPENDENT of the fee
+    ///      `surfacePolicy.active` and `exitFeeEnabled`. A `{active:false}` tier
+    ///      falls through; an `{active:true}` tier decides — `bypass ? 0 :
+    ///      globalDelaySeconds`. With no active bypass tier the default is
+    ///      `globalDelaySeconds` (delayed). An active `{bypass:false}` tier at a
+    ///      more-specific level overrides a broader bypass.
+    function _resolveDelay(bytes32 surfaceId, address subProduct, address effOrig)
+        internal
+        view
+        returns (uint32)
+    {
+        // Actor tier (most specific). No global actor bypass — always keyed
+        // [surfaceId][effOrig].
+        IExitFeeController.DelayBypassPolicy memory a = _actorBypass[surfaceId][effOrig];
+        if (a.active) return a.bypass ? 0 : globalDelaySeconds;
+
+        // Sub-product tier. address(0) means "no per-instance dimension" (e.g.
+        // Zero) — skip the lookup so a sibling sub-product cannot leak in.
+        if (subProduct != address(0)) {
+            IExitFeeController.DelayBypassPolicy memory s = _subProductBypass[surfaceId][subProduct];
+            if (s.active) return s.bypass ? 0 : globalDelaySeconds;
+        }
+
+        // Surface tier.
+        IExitFeeController.DelayBypassPolicy memory f = _surfaceBypass[surfaceId];
+        if (f.active) return f.bypass ? 0 : globalDelaySeconds;
+
+        // No active bypass tier: default is the global delay (delayed).
+        return globalDelaySeconds;
     }
 }

@@ -46,7 +46,7 @@ import {IExitFeeController} from "../src/interfaces/IExitFeeController.sol";
 ///       --rpc-url $RSK_RPC --broadcast --account deployer \
 ///       --sig "run(uint256)" <chainId>
 ///
-///      Surface IDs are derived as `keccak256("<NAME>")` per
+///      Surface IDs are derived as `keccak256("<SURFACE_NAME>")` per
 ///      `docs/SURFACE_REGISTRY.md`.
 ///
 ///      ALL five registered surfaces are written here — the deploy

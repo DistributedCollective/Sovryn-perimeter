@@ -29,6 +29,20 @@ fs_permissions = [
 # the actual emitted warning code, and add it below. Do not guess the value.
 # ignored_error_codes = [<code>]
 
+[profile.default.invariant]
+# Bounded so the stateful ExitDelayQueue suite (22 handler selectors, per-step
+# index-consistency assertions that page the active sets) completes in CI time.
+# Raise runs/depth for a deeper campaign; the defaults (256×500) are too heavy
+# for the O(n) index paging on every step.
+runs = 64
+depth = 60
+#  the handlers try/catch every EXPECTED queue revert and the non-queue
+# ops (token/native transfers off a huge pre-funded balance, force-sends,
+# vm.warp) are revert-free by construction, so the suite is revert-free and we
+# assert it. The prior `(aSeed+1)%3` receiver index was fixed to `(aSeed%3+1)%3`
+# (no more 0x11 overflow-panic at a max seed) so nothing leaks past the catches.
+fail_on_revert = true
+
 [profile.default.fmt]
 line_length = 110
 
