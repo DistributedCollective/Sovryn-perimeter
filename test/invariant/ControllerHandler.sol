@@ -90,10 +90,10 @@ contract ControllerHandler {
     constructor(ExitFeeController controller_) {
         controller = controller_;
 
-        _surfaces[0] = keccak256("COLFEE:SURFACE_LENDING_LENDER_WITHDRAW");
-        _surfaces[1] = keccak256("COLFEE:SURFACE_LENDING_BORROWER_WITHDRAW");
-        _surfaces[2] = keccak256("COLFEE:SURFACE_ZERO_WITHDRAW_COLL");
-        _surfaces[3] = keccak256("COLFEE:SURFACE_AMM_REMOVE_LIQUIDITY");
+        _surfaces[0] = keccak256("PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW");
+        _surfaces[1] = keccak256("PERIMETER_SURFACE_LENDING_BORROWER_WITHDRAW");
+        _surfaces[2] = keccak256("PERIMETER_SURFACE_ZERO_WITHDRAW_COLL");
+        _surfaces[3] = keccak256("PERIMETER_SURFACE_AMM_REMOVE_LIQUIDITY");
 
         for (uint256 i = 0; i < 8; ++i) {
             _addrs[i] = address(uint160(0xA00 + i + 1)); // all non-zero

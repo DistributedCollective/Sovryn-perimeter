@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Storage-layout upgrade-compatibility check for the ColFee proxies.
+Storage-layout upgrade-compatibility check for the Perimeter proxies.
 
 Usage:
     diff-storage-layouts.py <saved-deployment-artifact.json> <candidate-build-artifact.json>

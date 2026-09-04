@@ -36,8 +36,8 @@ contract ExitFeeControllerTest is Test {
     address constant OTHER = address(0xBEEF);
     address constant CAFE = address(0xCAFE);
 
-    bytes32 constant SURFACE = keccak256("COLFEE:SURFACE_LENDING_LENDER_WITHDRAW");
-    bytes32 constant SURFACE_OTHER = keccak256("COLFEE:SURFACE_ZERO_WITHDRAW_COLL");
+    bytes32 constant SURFACE = keccak256("PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW");
+    bytes32 constant SURFACE_OTHER = keccak256("PERIMETER_SURFACE_ZERO_WITHDRAW_COLL");
 
     function setUp() public {
         ExitFeeController impl = new ExitFeeController();
