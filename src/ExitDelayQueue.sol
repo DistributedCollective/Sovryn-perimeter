@@ -1197,12 +1197,9 @@ contract ExitDelayQueue is
         revert OwnershipCannotBeRenounced();
     }
 
-    // NOTE the
-    // `_transferOwnership` chokepoint override (Admin != Owner enforced on
-    // the ownership side) was REMOVED together with the initialize/setAdmin
-    // owner-equality checks — admin == owner is a supported shape (the
-    // governance Safe holds both roles at launch). Consequence, accepted:
-    // while the roles coincide, the Leg-2/Leg-3 authority split and
-    // the bounds are vacuous; they become real when ownership moves to
-    // Bitocracy.
+    // `admin == owner` is a supported shape and nothing here enforces a
+    // separation: at launch one governance Safe holds both roles. The
+    // consequence is accepted — while the roles coincide the Leg-2/Leg-3
+    // authority split and its bounds are vacuous, and they become real only
+    // once ownership moves to Bitocracy while the guardian stays put.
 }

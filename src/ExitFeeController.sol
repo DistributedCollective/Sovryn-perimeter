@@ -333,12 +333,9 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         revert OwnershipCannotBeRenounced();
     }
 
-    // NOTE the
-    // `_transferOwnership` chokepoint override (Admin != Owner enforced on
-    // the ownership side) was REMOVED together with `setAdmin`'s
-    // owner-equality check — admin == owner is a supported shape (the
-    // governance Safe holds both roles at launch). The queue's counterpart
-    // was removed in the same change.
+    // `admin == owner` is a supported shape and nothing here enforces a
+    // separation: at launch one governance Safe holds both roles. The queue
+    // says the same about its own pair of roles.
 
     /// @notice Appoint (or rotate) the operational guardian checked by
     ///         `onlyAdminOrOwner`. Owner-only. `address(0)` is rejected --

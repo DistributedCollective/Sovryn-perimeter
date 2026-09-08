@@ -43,7 +43,7 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 /// @dev Usage:
 ///
 ///   export EXIT_DELAY_QUEUE_OWNER=0x...        # queue Owner (governance Safe / timelock)
-///   export EXIT_DELAY_QUEUE_ADMIN=0x...        # queue Admin (must != Owner; == controller.admin, set later)
+///   export EXIT_DELAY_QUEUE_ADMIN=0x...        # queue Admin (MAY equal Owner; must == controller.admin, set later)
 ///   export WRBTC_ADDRESS=0x...                 # canonical wrapped-RBTC ERC20
 ///   export QUEUE_MIN_DELAY_SECONDS=3600        # per-request delay floor
 ///   export QUEUE_ALLOWED_SOURCES=0xA,0xB       # comma-separated hooked sources (optional; activation step 2)
