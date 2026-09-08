@@ -23,6 +23,22 @@ contract VerifyActivationHarness is VerifyActivation {
         return _resolveHosts(deferHosts, sovrynHost, zeroHost);
     }
 
+    function resolveRecordingHosts(bool deferHosts, address[] memory raw)
+        external
+        view
+        returns (address[] memory)
+    {
+        return _resolveRecordingHosts(deferHosts, raw);
+    }
+
+    function mergeHosts(address[] memory storageHosts, address[] memory recordingHosts)
+        external
+        pure
+        returns (address[] memory)
+    {
+        return _mergeHosts(storageHosts, recordingHosts);
+    }
+
     /// Expose the banner emitter so BOTH legs — the unqualified "safe to run step 8"
     /// banner (anyHostDeferred==false) and the qualified/warned downgrade
     /// (anyHostDeferred==true) — are exercised deterministically WITHOUT the env→run
@@ -603,6 +619,138 @@ contract VerifyActivationTest is Test {
         _verify();
     }
 
+    // ─── the hosts that actually RECORD ────────────────────────────────────
+    //     The two spec-named hosts hold the queue pointer; the addresses the
+    //     queue sees as `msg.sender` on the lender surface are the iToken
+    //     proxies. A gate that checks only the pointer-holders certifies a
+    //     deploy in which a pool is registered and its neighbour is not.
+
+    function _recording(address a) internal pure returns (address[] memory out) {
+        out = new address[](1);
+        out[0] = a;
+    }
+
+    /// An iToken-shaped host: it answers `exitDelayQueue()` (through the
+    /// protocol pointer in production) and is a record caller in its own right.
+    function _makeWiredRecordingHost() internal returns (MockProductHost h) {
+        h = new MockProductHost();
+        h.setExitDelayQueue(address(queue));
+        vm.prank(QUEUE_OWNER);
+        queue.addAllowedSource(address(h));
+    }
+
+    /// The F3 scenario: one pool registered, its neighbour missed. Every
+    /// withdrawal from the missed pool reverts UnregisteredSource from the moment
+    /// the delay is armed, and the gate that exists to catch this must not pass.
+    function test_verify_reverts_when_a_recording_host_is_not_allowed_source() public {
+        MockProductHost registered = _makeWiredRecordingHost();
+        MockProductHost missed = new MockProductHost();
+        missed.setExitDelayQueue(address(queue)); // wired, but never allow-listed
+        _makeFullyCorrect();
+
+        address[] memory hs = new address[](3);
+        hs[0] = address(host);
+        hs[1] = address(registered);
+        hs[2] = address(missed);
+
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "C2: host ",
+                    vm.toString(address(missed)),
+                    " not allowed-source -- queue.isAllowedSource(host)==false (bricked fail-closed)"
+                )
+            )
+        );
+        script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
+    }
+
+    function test_verify_reverts_when_a_recording_host_is_not_wired() public {
+        MockProductHost stray = new MockProductHost(); // allow-listed but pointing nowhere
+        vm.prank(QUEUE_OWNER);
+        queue.addAllowedSource(address(stray));
+        _makeFullyCorrect();
+
+        address[] memory hs = new address[](2);
+        hs[0] = address(host);
+        hs[1] = address(stray);
+
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "C2: host ",
+                    vm.toString(address(stray)),
+                    " not wired -- host.exitDelayQueue() != queue (fail-open zero-delay)"
+                )
+            )
+        );
+        script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
+    }
+
+    /// An empty recording list is the fresh-shell footgun the spec-named hosts
+    /// are already protected against: without it the wiring loop would check the
+    /// two pointer-holders and certify every pool unchecked.
+    function test_resolveRecordingHosts_reverts_on_empty_without_defer() public {
+        vm.expectRevert(
+            bytes(
+                "C1: QUEUE_ALLOWED_SOURCES is empty -- list every hooked record caller (iToken proxies; the native pusher), or set VERIFY_DEFER_HOSTS=true to defer explicitly"
+            )
+        );
+        script.resolveRecordingHosts(false, new address[](0));
+    }
+
+    function test_resolveRecordingHosts_defers_empty_with_optin() public view {
+        address[] memory got = script.resolveRecordingHosts(true, new address[](0));
+        assertEq(got.length, 0, "an explicit deferral drops the recording hosts");
+    }
+
+    function test_resolveRecordingHosts_reverts_on_zero_entry() public {
+        address[] memory raw = new address[](2);
+        raw[0] = SOVRYN_HOST;
+        raw[1] = address(0);
+        vm.expectRevert(bytes("C1: QUEUE_ALLOWED_SOURCES carries a zero entry -- a blank in the list is a typo"));
+        script.resolveRecordingHosts(false, raw);
+    }
+
+    function test_resolveRecordingHosts_reverts_on_zero_entry_even_when_deferring() public {
+        address[] memory raw = new address[](1);
+        raw[0] = address(0);
+        vm.expectRevert(bytes("C1: QUEUE_ALLOWED_SOURCES carries a zero entry -- a blank in the list is a typo"));
+        script.resolveRecordingHosts(true, raw);
+    }
+
+    function test_resolveRecordingHosts_passes_a_list_of_any_length() public view {
+        address[] memory raw = new address[](3);
+        raw[0] = SOVRYN_HOST;
+        raw[1] = ZERO_HOST;
+        raw[2] = SOURCE;
+        assertEq(script.resolveRecordingHosts(false, raw).length, 3);
+    }
+
+    /// A record caller that is also a pointer-holder — the protocol singleton is
+    /// both — must be checked once, not twice.
+    function test_mergeHosts_dedupes() public view {
+        address[] memory storageHosts = new address[](2);
+        storageHosts[0] = SOVRYN_HOST;
+        storageHosts[1] = ZERO_HOST;
+        address[] memory recording = new address[](3);
+        recording[0] = SOVRYN_HOST;
+        recording[1] = SOURCE;
+        recording[2] = SOURCE;
+
+        address[] memory merged = script.mergeHosts(storageHosts, recording);
+        assertEq(merged.length, 3, "SOVRYN_HOST and the repeated SOURCE collapse");
+        assertEq(merged[0], SOVRYN_HOST);
+        assertEq(merged[1], ZERO_HOST);
+        assertEq(merged[2], SOURCE);
+    }
+
+    function test_mergeHosts_keeps_the_recording_hosts_when_no_storage_hosts() public view {
+        address[] memory merged = script.mergeHosts(new address[](0), _recording(SOURCE));
+        assertEq(merged.length, 1);
+        assertEq(merged[0], SOURCE);
+    }
+
     // ─── run(chainId) artifact + env path ──────────────────────────────────
 
     /// @dev Write the deployment artifacts + the always-required (non-host) env vars
@@ -644,6 +792,10 @@ contract VerifyActivationTest is Test {
 
         vm.setEnv("SOVRYN_PROTOCOL_HOST", vm.toString(address(host)));
         vm.setEnv("ZERO_BORROWER_OPERATIONS_HOST", vm.toString(address(host2)));
+        vm.setEnv(
+            "QUEUE_ALLOWED_SOURCES",
+            string.concat(vm.toString(address(host)), ",", vm.toString(address(host2)))
+        );
         vm.setEnv("VERIFY_DEFER_HOSTS", "false");
 
         script.run(CHAIN_ID); // does not revert; unqualified PASS banner

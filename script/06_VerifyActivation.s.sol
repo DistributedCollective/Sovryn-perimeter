@@ -18,14 +18,26 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///         fail-open (unwired host = zero-delay direct-pay) or fail-closed
 ///         (mis-owned / wired-but-not-allowed = bricked).
 ///
-///         SCOPE (honest): this gate verifies the two
-///         STORAGE HOSTS are wired + allowed-source, plus guardian/floor/ownership.
-///         It does NOT enumerate the actual record CALLERS (iToken proxies for
-///         lender burn/burnToBTC; the ActivePool native pusher) — those live in the
-///         separate step-2 source SIP (QUEUE_ALLOWED_SOURCES + setNativePusher) and
-///         are confirmed there. A missing record-caller source is fail-CLOSED
-///         (records revert UnregisteredSource, Owner-remediable via addAllowedSource),
-///         so it is out of this gate's scope by design, not an unguarded fail-open.
+///         SCOPE: the two STORAGE HOSTS that hold the queue pointer are not the
+///         addresses the queue sees as `msg.sender`. On the lender surface the
+///         record caller is the iToken PROXY — `LoanTokenLogicShared` calls
+///         `recordERC20Exit` from the iToken's own context — so `onlyAllowedSource`
+///         is evaluated against each pool, one by one. A gate that checked only the
+///         two pointer-holders would certify a deploy in which iXUSD is on the
+///         allow-list and iDOC was missed: every iDOC withdrawal then reverts
+///         `UnregisteredSource` from the moment the delay is armed.
+///
+///         So the checked list is the UNION of the two spec-named hosts and every
+///         hooked record caller named in `QUEUE_ALLOWED_SOURCES` — the SAME
+///         variable `05_DeployQueueAndWire` registers from, so the two cannot drift
+///         — of arbitrary length, deduplicated, and each entry held to BOTH
+///         predicates. The iToken proxies answer `exitDelayQueue()` through the
+///         protocol pointer, so the per-host assertion works on them unchanged.
+///
+///         RESIDUAL, stated rather than inherited: this gate checks the declared
+///         intent. A pool left out of `QUEUE_ALLOWED_SOURCES` *and* off the chain's
+///         allow-list is invisible to it. That list is the operator's statement of
+///         what the release hooks, and it is what the step-2 source SIP registers.
 ///
 ///         Asserts, each with a DISTINCT revert message:
 ///            controller.admin() == queue.admin(), both non-zero  -- guardian
@@ -66,6 +78,8 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///   export EXIT_DELAY_DEPLOYER=0x...                # the broadcast EOA that ran the deploy
 ///   export SOVRYN_PROTOCOL_HOST=0x...               # intended host (REQUIRED unless VERIFY_DEFER_HOSTS=true)
 ///   export ZERO_BORROWER_OPERATIONS_HOST=0x...      # intended host (REQUIRED unless VERIFY_DEFER_HOSTS=true)
+///   export QUEUE_ALLOWED_SOURCES=0xA,0xB,0xC        # every hooked record caller — the iToken proxies and the
+///                                                   # native pusher (REQUIRED unless VERIFY_DEFER_HOSTS=true)
 ///   # export VERIFY_DEFER_HOSTS=true                # ONLY to intentionally defer a host's wiring to a later SIP
 ///
 ///   forge script script/06_VerifyActivation.s.sol \
@@ -94,13 +108,17 @@ contract VerifyActivation is Script {
         //    skipped ONLY via an EXPLICIT `VERIFY_DEFER_HOSTS=true`. ──
         bool deferHosts = vm.envOr("VERIFY_DEFER_HOSTS", false);
         (address sovrynHost, address zeroHost) = _readHostEnv(deferHosts);
-        address[] memory hosts = _resolveHosts(deferHosts, sovrynHost, zeroHost);
+        address[] memory storageHosts = _resolveHosts(deferHosts, sovrynHost, zeroHost);
+        address[] memory recordingHosts =
+            _resolveRecordingHosts(deferHosts, _readRecordingHostsEnv(deferHosts));
+        address[] memory hosts = _mergeHosts(storageHosts, recordingHosts);
 
         console2.log("ExitFeeController @", address(controller));
         console2.log("ExitDelayQueue    @", address(queue));
         console2.log("governance owner  @", governanceOwner);
         console2.log("deployer EOA      @", deployer);
         console2.log("intended hosts    :", hosts.length);
+        console2.log("  of which record :", recordingHosts.length);
         console2.log("");
 
         verify(controller, queue, governanceOwner, deployer, hosts, deferHosts);
@@ -110,7 +128,8 @@ contract VerifyActivation is Script {
         // flag: with defer=true but both hosts present, all surfaces ARE certified
         // and the unqualified banner is correct; the qualified/warned banner is for
         // an ACTUAL deferral (a spec-named host dropped from the checked list).
-        bool anyHostDeferred = hosts.length < _EXPECTED_HOST_COUNT;
+        bool anyHostDeferred =
+            storageHosts.length < _EXPECTED_HOST_COUNT || recordingHosts.length == 0;
         _reportPass(anyHostDeferred);
     }
 
@@ -134,6 +153,88 @@ contract VerifyActivation is Script {
             sovrynHost = vm.envAddress("SOVRYN_PROTOCOL_HOST");
             zeroHost = vm.envAddress("ZERO_BORROWER_OPERATIONS_HOST");
         }
+    }
+
+    /// @dev Read the hooked record callers from `QUEUE_ALLOWED_SOURCES` — the SAME
+    ///      comma-separated variable `05_DeployQueueAndWire` registers the queue's
+    ///      allowed-source set from, so the deploy and this gate cannot describe
+    ///      different systems. REQUIRED when not deferring (`vm.envAddress` reverts
+    ///      on unset or typo'd), so a fresh shell cannot yield a silently empty list.
+    function _readRecordingHostsEnv(bool deferHosts) internal view returns (address[] memory) {
+        if (deferHosts) {
+            return vm.envOr("QUEUE_ALLOWED_SOURCES", ",", new address[](0));
+        }
+        return vm.envAddress("QUEUE_ALLOWED_SOURCES", ",");
+    }
+
+    /// @notice Validate the hooked record-caller list. Public-of-env (the harness
+    ///         drives it on in-memory addresses) for the same reason `_resolveHosts`
+    ///         is: `vm.setEnv` mutates process-global state forge does not isolate
+    ///         between concurrently-scheduled test functions.
+    ///
+    ///         Contract:
+    ///           - a zero entry is ALWAYS a hard REVERT, deferral or not: a blank in
+    ///             a comma-separated list is a typo, never an intention.
+    ///           - an EMPTY list is a hard REVERT unless deferral is EXPLICIT. An
+    ///             empty list would leave every pool unchecked while the gate
+    ///             certifies go-live — the vacuous-PASS the spec-named hosts are
+    ///             already protected against.
+    /// @param deferHosts  the explicit VERIFY_DEFER_HOSTS opt-in
+    /// @param raw         the list as read from the environment
+    /// @return hosts      the same list, validated
+    function _resolveRecordingHosts(bool deferHosts, address[] memory raw)
+        internal
+        view
+        returns (address[] memory hosts)
+    {
+        for (uint256 i; i < raw.length; i++) {
+            require(
+                raw[i] != address(0),
+                "C1: QUEUE_ALLOWED_SOURCES carries a zero entry -- a blank in the list is a typo"
+            );
+        }
+        if (raw.length == 0) {
+            require(
+                deferHosts,
+                "C1: QUEUE_ALLOWED_SOURCES is empty -- list every hooked record caller (iToken proxies; the native pusher), or set VERIFY_DEFER_HOSTS=true to defer explicitly"
+            );
+            console2.log(
+                unicode"⚠ no record callers checked -- every hooked pool ships UNVERIFIED:"
+            );
+            console2.log(unicode"    QUEUE_ALLOWED_SOURCES (iToken proxies; the native pusher)");
+        }
+        return raw;
+    }
+
+    /// @dev Union the pointer-holders and the record callers, keeping first-seen
+    ///      order and dropping repeats. The protocol singleton is BOTH — it holds
+    ///      the pointer and records the borrower surface itself — so without this
+    ///      it would be asserted twice and reported as two hosts.
+    function _mergeHosts(address[] memory storageHosts, address[] memory recordingHosts)
+        internal
+        pure
+        returns (address[] memory hosts)
+    {
+        address[] memory buf = new address[](storageHosts.length + recordingHosts.length);
+        uint256 n;
+        for (uint256 i; i < storageHosts.length; i++) {
+            n = _pushUnique(buf, n, storageHosts[i]);
+        }
+        for (uint256 i; i < recordingHosts.length; i++) {
+            n = _pushUnique(buf, n, recordingHosts[i]);
+        }
+        hosts = new address[](n);
+        for (uint256 i; i < n; i++) {
+            hosts[i] = buf[i];
+        }
+    }
+
+    function _pushUnique(address[] memory buf, uint256 n, address a) private pure returns (uint256) {
+        for (uint256 i; i < n; i++) {
+            if (buf[i] == a) return n;
+        }
+        buf[n] = a;
+        return n + 1;
     }
 
     /// @dev Read the controller + queue proxy addresses from the deployment
@@ -251,20 +352,18 @@ contract VerifyActivation is Script {
                 unicode"OK: activation step-7 gate PASSED for: guardian + delay floor + ownership + host wiring."
             );
             console2.log(
-                unicode"NOTE (scope): this gate verifies the two STORAGE HOSTS are wired + allowed-source. It does"
+                unicode"NOTE (scope): the checked list is the two STORAGE HOSTS plus every record caller named in"
             );
             console2.log(
-                unicode"  NOT enumerate the actual record CALLERS (iToken proxies for lender burn/burnToBTC; ActivePool"
+                unicode"  QUEUE_ALLOWED_SOURCES (the iToken proxies; the native pusher). Each was proved wired AND"
             );
             console2.log(
-                unicode"  native pusher) — those are registered/verified by the step-2 source SIP (QUEUE_ALLOWED_SOURCES"
+                unicode"  allowed-source. A hooked caller left out of that variable AND off the chain's allow-list is"
             );
             console2.log(
-                unicode"  + setNativePusher). A missing one is fail-CLOSED (records revert UnregisteredSource, Owner-remediable)."
+                unicode"  invisible here — the variable is the operator's statement of what this release hooks."
             );
-            console2.log(
-                unicode"Safe to run step 8 (setSecurityPerimeterEnabled(true)) ONCE the step-2 source set is confirmed."
-            );
+            console2.log(unicode"Safe to run step 8 (setSecurityPerimeterEnabled(true)).");
         }
     }
 
