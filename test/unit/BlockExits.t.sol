@@ -251,6 +251,57 @@ contract BlockExitsTest is Test {
 
     // --- input discipline -----------------------------------------------
 
+    // --- the flat freeze / the explicit downgrade ------------------------
+
+    /// @notice The queue refuses an evidence-free freeze over a blacklisted
+    ///         address, so the preview must refuse it too rather than print
+    ///         "no state change" and let a Safe round be spent on a revert.
+    function test_freeze_refuses_a_blacklisted_address() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        vm.expectRevert(
+            bytes(
+                "freeze would revert: an address is already blacklisted - use BLOCK_ACTION=downgrade to move it to frozen"
+            )
+        );
+        script.dispatch("freeze", _addrs(ORIG), _noIds(), false, "");
+    }
+
+    /// @notice A by-request freeze carries evidence, so the queue accepts it over
+    ///         a blacklisted party and the preview must not refuse it.
+    function test_freeze_by_request_allows_a_blacklisted_party() public {
+        uint256 id = _record(ORIG, OWNR, RCVR);
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        script.dispatch("freeze", _noAddrs(), _ids(id), false, "second look");
+    }
+
+    function test_downgrade_previews_a_blacklisted_address() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        script.dispatch("downgrade", _addrs(ORIG), _noIds(), false, "");
+    }
+
+    function test_downgrade_refuses_an_address_that_is_not_blacklisted() public {
+        vm.prank(ADMIN);
+        queue.freeze(ORIG);
+        vm.expectRevert(
+            bytes("downgrade requires every address to be Blacklisted - freeze is how a clear address is held")
+        );
+        script.dispatch("downgrade", _addrs(ORIG), _noIds(), false, "");
+    }
+
+    function test_downgrade_rejects_request_ids() public {
+        uint256 id = _record(ORIG, OWNR, RCVR);
+        vm.expectRevert(bytes("downgrade is by address only - the queue has no by-request downgrade"));
+        script.dispatch("downgrade", _addrs(ORIG), _ids(id), false, "");
+    }
+
+    function test_downgrade_requires_some_input() public {
+        vm.expectRevert(bytes("set BLOCK_ACTORS"));
+        script.dispatch("downgrade", _noAddrs(), _noIds(), false, "");
+    }
+
     function test_freeze_rejects_both_input_modes_at_once() public {
         uint256 id = _record(ORIG, OWNR, RCVR);
         vm.expectRevert(bytes("set BLOCK_ACTORS or BLOCK_REQUEST_IDS, not both - they build different calls"));
@@ -265,7 +316,7 @@ contract BlockExitsTest is Test {
     function test_unknown_action_is_rejected() public {
         vm.expectRevert(
             bytes(
-                "BLOCK_ACTION must be one of: freeze, blacklist, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
+                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
             )
         );
         script.dispatch("halt", _addrs(ORIG), _noIds(), false, "");

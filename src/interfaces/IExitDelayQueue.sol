@@ -129,8 +129,9 @@ interface IExitDelayQueue {
     error TopUpInfeasibleSurface(bytes32 surfaceId); // setRecoveryRoute topUpPool guard
     error TopUpDestinationMismatch(address destination, address subProduct); // top-up must pay its own pool
     error SourceNotBlacklisted(address src); //   Leg-2 OR-predicate not satisfied
-    error NotBlacklisted(address a); //           unblacklist on a non-Blacklisted address
+    error NotBlacklisted(address a); //           unblacklist / downgradeToFrozen on a non-Blacklisted address
     error NotFrozen(address a); //                unfreeze on a non-Frozen address
+    error AlreadyBlacklisted(address a); //       evidence-free freeze over a Blacklisted address
     error NotResolvableBySIP(uint256 id); //      Leg-3 bounded predicate not satisfied
     error UnwrapNonWrbtc(); //                    unwrapOnDelivery set on a non-WRBTC token (guard)
     error InvalidAltReceiver(address altReceiver); // recoverStuckExit altReceiver ∈ {0,this,token,wrbtc}
@@ -236,10 +237,25 @@ interface IExitDelayQueue {
     function blacklistFromRequest(uint256[] calldata requestIds, bool freezeReceiver, bytes32 reasonHash)
         external;
 
+    /// @notice Flat block levers. They carry no evidence, so a `freeze` over an
+    ///         address that is already Blacklisted would change nothing and record
+    ///         nothing: it reverts `AlreadyBlacklisted` rather than answering with
+    ///         a success that reads as "this address is now frozen". The
+    ///         by-request levers above carry a trigger and a reason, so they stay
+    ///         unconditional on a known id — over a Blacklisted party they hold the
+    ///         stronger state, record the new evidence, and announce Blacklisted.
     function freeze(address a) external;
     function blacklist(address a) external;
     function unfreeze(address a) external;
     function unblacklist(address a) external;
+
+    /// @notice Move a Blacklisted address down to Frozen in one call — the
+    ///         remedy for an address blacklisted in haste that should only be held
+    ///         while it is investigated. There is no window in which the address is
+    ///         unblocked, unlike unblacklist-then-freeze. Reverts `NotBlacklisted`
+    ///         on any other state; the recorded trigger is kept, because a
+    ///         downgrade means "still under investigation", not "exonerated".
+    function downgradeToFrozen(address a) external;
 
     // Batch by-address: each reverts `EmptyIds()` on
     // an empty array, for API consistency with the by-id batch variants
@@ -249,6 +265,7 @@ interface IExitDelayQueue {
     function blacklist(address[] calldata a) external;
     function unfreeze(address[] calldata a) external;
     function unblacklist(address[] calldata a) external;
+    function downgradeToFrozen(address[] calldata a) external;
 
     // ─── Pause ───────────────────────────────────────────────────
 

@@ -693,6 +693,11 @@ contract ExitDelayQueue is
     }
 
     /// @inheritdoc IExitDelayQueue
+    function downgradeToFrozen(address a) external onlyAdminOrOwner {
+        _downgradeToFrozen(a);
+    }
+
+    /// @inheritdoc IExitDelayQueue
     /// @dev EmptyIds guard: an empty array is a caller mistake, not a
     ///      silent no-op — for consistency with the by-id batch variants.
     function freeze(address[] calldata a) external onlyAdminOrOwner {
@@ -729,32 +734,72 @@ contract ExitDelayQueue is
         }
     }
 
+    /// @inheritdoc IExitDelayQueue
+    /// @dev EmptyIds guard. Atomic like every other batch here: one address that
+    ///      is not Blacklisted refuses the whole call.
+    function downgradeToFrozen(address[] calldata a) external onlyAdminOrOwner {
+        if (a.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < a.length; ++i) {
+            _downgradeToFrozen(a[i]);
+        }
+    }
+
     /// @dev Set (or escalate) a block. Frozen→Blacklisted is atomic (no unfreeze
-    ///      first). Re-block on an already-`to` state is a state no-op that
-    ///      refreshes trigger + reason (last-write-wins).
+    ///      first). Re-block on an already-`to` state is a state no-op.
+    ///
+    ///      Evidence rule. `_blockTrigger` is the only on-chain link from a
+    ///      blocked address back to the request that explains it, and the flat
+    ///      levers (`freeze(address)` / `blacklist(address)` and their batches)
+    ///      carry none — they pass triggerId 0 and reason 0. So the trigger is
+    ///      written only by a call that carries evidence, or by the first block on
+    ///      a previously-unblocked address. A responder re-running a flat sweep
+    ///      over addresses already blocked by request id therefore cannot erase
+    ///      what the by-request pass recorded.
+    ///
+    ///      The event announces the trigger that HOLDS after the call, not the one
+    ///      the call passed, so `blockTrigger` is reconstructible from the log
+    ///      alone.
+    ///
+    ///      No Blacklisted → Frozen downgrade here: a blacklist is the strongest
+    ///      state and is weakened only by the explicit `downgradeToFrozen` or by
+    ///      `unblacklist`. An evidence-carrying freeze over a blacklisted address
+    ///      holds that state and records its evidence — which keeps the by-request
+    ///      emergency lever unconditional on a known id. An evidence-FREE freeze
+    ///      there would change nothing and record nothing, so it reverts rather
+    ///      than returning a success an operator reads as "now frozen".
     function _setBlock(address a, BlockState to, uint256 triggerId, bytes32 reasonHash) internal {
         if (a == address(0)) revert ZeroAddress();
-        // No Blacklisted → Frozen downgrade: a blacklist is only cleared by
-        // unblacklist. A `freeze` on an already-Blacklisted address is a no-op
-        // that still refreshes trigger/reason (does not downgrade).
         BlockState from = _blockState[a];
+        bool carriesEvidence = triggerId != 0 || reasonHash != bytes32(0);
+
         if (to == BlockState.Frozen && from == BlockState.Blacklisted) {
-            // Hold the stronger state. A freeze carrying no evidence (the plain
-            // `freeze(address)` passes triggerId 0 / reason 0) must not erase the
-            // blacklist's recorded trigger and reason; only a by-request freeze
-            // that carries real evidence refreshes them.
-            if (triggerId != 0 || reasonHash != bytes32(0)) {
-                _blockTrigger[a] = triggerId;
-                emit AccountBlocked(a, from, triggerId, reasonHash);
-            }
+            if (!carriesEvidence) revert AlreadyBlacklisted(a);
+            _blockTrigger[a] = triggerId;
+            emit AccountBlocked(a, from, triggerId, reasonHash);
             return;
         }
         if (from == BlockState.None) {
             _blockedAccounts.add(a);
         }
         _blockState[a] = to;
-        _blockTrigger[a] = triggerId;
-        emit AccountBlocked(a, to, triggerId, reasonHash);
+        uint256 trigger = _blockTrigger[a];
+        if (carriesEvidence || from == BlockState.None) {
+            trigger = triggerId;
+            _blockTrigger[a] = triggerId;
+        }
+        emit AccountBlocked(a, to, trigger, reasonHash);
+    }
+
+    /// @dev The one call that weakens a block without unblocking first. Only
+    ///      Blacklisted → Frozen: every other starting state is a caller mistake
+    ///      (`unfreeze` clears a freeze, `blacklist` escalates one). The trigger is
+    ///      kept and re-announced — a downgrade says the address is still under
+    ///      investigation, so the evidence behind it still stands.
+    function _downgradeToFrozen(address a) internal {
+        if (a == address(0)) revert ZeroAddress();
+        if (_blockState[a] != BlockState.Blacklisted) revert NotBlacklisted(a);
+        _blockState[a] = BlockState.Frozen;
+        emit AccountBlocked(a, BlockState.Frozen, _blockTrigger[a], bytes32(0));
     }
 
     /// @dev Clear a block. `expected` selects which removal fn ran: unfreeze

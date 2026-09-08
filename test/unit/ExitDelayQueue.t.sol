@@ -765,12 +765,196 @@ contract ExitDelayQueueTest is Test {
         queue.unfreeze(ORIG);
     }
 
-    function test_freeze_on_blacklisted_no_downgrade() public {
+    /// @notice The flat `freeze` lever over a blacklisted address records nothing
+    ///         and changes nothing, so it is refused rather than answered with a
+    ///         success an operator would read as "this address is now frozen".
+    function test_freeze_on_blacklisted_reverts() public {
         vm.prank(ADMIN);
         queue.blacklist(ORIG);
         vm.prank(ADMIN);
-        queue.freeze(ORIG); // must NOT downgrade
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.AlreadyBlacklisted.selector, ORIG));
+        queue.freeze(ORIG);
         assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Blacklisted));
+    }
+
+    /// @notice The batch flat freeze is atomic: one blacklisted member refuses the
+    ///         whole call, so a partially-applied sweep can never be mistaken for
+    ///         a complete one.
+    function test_batch_freeze_reverts_when_any_address_is_blacklisted() public {
+        vm.startPrank(ADMIN);
+        queue.blacklist(OWNR);
+        address[] memory a = new address[](2);
+        a[0] = ORIG;
+        a[1] = OWNR;
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.AlreadyBlacklisted.selector, OWNR));
+        queue.freeze(a);
+        vm.stopPrank();
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.None));
+    }
+
+    /// @notice The by-request lever carries evidence, so it is never a silent
+    ///         no-op: over a blacklisted party it holds the stronger state,
+    ///         records the new trigger and announces the state that actually
+    ///         holds. That keeps the emergency lever unconditional on a known id.
+    function test_freezeFromRequest_over_blacklisted_party_holds_and_announces() public {
+        uint256 id = _queueErc20(1 ether);
+        vm.startPrank(ADMIN);
+        queue.blacklist(ORIG);
+
+        vm.expectEmit(true, true, true, true);
+        emit AccountBlocked(ORIG, IExitDelayQueue.BlockState.Blacklisted, id, keccak256("second look"));
+        queue.freezeFromRequest(id, false, keccak256("second look"));
+        vm.stopPrank();
+
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Blacklisted));
+        assertEq(queue.blockTrigger(ORIG), id, "the by-request freeze recorded its evidence");
+    }
+
+    // ── blacklisted -> frozen: the explicit downgrade ──
+
+    /// @notice An address blacklisted in haste moves down to Frozen in ONE call —
+    ///         no window in which it is unblocked — and the move is announced.
+    function test_downgradeToFrozen_moves_blacklisted_to_frozen() public {
+        vm.startPrank(ADMIN);
+        queue.blacklist(ORIG);
+
+        vm.expectEmit(true, true, true, true);
+        emit AccountBlocked(ORIG, IExitDelayQueue.BlockState.Frozen, 0, bytes32(0));
+        queue.downgradeToFrozen(ORIG);
+        vm.stopPrank();
+
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Frozen));
+        // Still blocked, so still enumerable and still clearable by unfreeze.
+        (, uint256 total) = queue.blockedAccounts(0, 10);
+        assertEq(total, 1, "a downgraded address stays in the blocked set");
+        vm.prank(ADMIN);
+        queue.unfreeze(ORIG);
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.None));
+    }
+
+    /// @notice The downgrade keeps the evidence that caused the block: the address
+    ///         is under investigation, not exonerated.
+    function test_downgradeToFrozen_preserves_trigger() public {
+        uint256 id = _queueErc20(1 ether);
+        vm.startPrank(ADMIN);
+        queue.blacklistFromRequest(id, false, keccak256("theft"));
+        assertEq(queue.blockTrigger(ORIG), id, "precondition: the blacklist recorded the request");
+
+        vm.expectEmit(true, true, true, true);
+        emit AccountBlocked(ORIG, IExitDelayQueue.BlockState.Frozen, id, bytes32(0));
+        queue.downgradeToFrozen(ORIG);
+        vm.stopPrank();
+
+        assertEq(queue.blockTrigger(ORIG), id, "trigger survives the downgrade");
+    }
+
+    function test_downgradeToFrozen_on_frozen_reverts() public {
+        vm.startPrank(ADMIN);
+        queue.freeze(ORIG);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotBlacklisted.selector, ORIG));
+        queue.downgradeToFrozen(ORIG);
+        vm.stopPrank();
+    }
+
+    function test_downgradeToFrozen_on_unblocked_reverts() public {
+        vm.prank(ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotBlacklisted.selector, ORIG));
+        queue.downgradeToFrozen(ORIG);
+    }
+
+    function test_downgradeToFrozen_only_admin_or_owner() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        vm.prank(OUTSIDER);
+        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
+        queue.downgradeToFrozen(ORIG);
+    }
+
+    function test_downgradeToFrozen_batch() public {
+        vm.startPrank(ADMIN);
+        address[] memory a = new address[](2);
+        a[0] = ORIG;
+        a[1] = OWNR;
+        queue.blacklist(a);
+        queue.downgradeToFrozen(a);
+        vm.stopPrank();
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Frozen));
+        assertEq(uint256(queue.blockStateOf(OWNR)), uint256(IExitDelayQueue.BlockState.Frozen));
+    }
+
+    function test_downgradeToFrozen_batch_empty_reverts() public {
+        address[] memory a = new address[](0);
+        vm.prank(ADMIN);
+        vm.expectRevert(IExitDelayQueue.EmptyIds.selector);
+        queue.downgradeToFrozen(a);
+    }
+
+    function test_downgradeToFrozen_zero_address_reverts() public {
+        vm.prank(ADMIN);
+        vm.expectRevert(IExitDelayQueue.ZeroAddress.selector);
+        queue.downgradeToFrozen(address(0));
+    }
+
+    // ── evidence survives every evidence-free re-block ──
+
+    /// @notice A flat re-freeze over an address already frozen by request id must
+    ///         not zero the request that explains why it is blocked.
+    function test_freeze_on_frozen_preserves_trigger() public {
+        uint256 id = _queueErc20(1 ether);
+        vm.startPrank(ADMIN);
+        queue.freezeFromRequest(id, false, keccak256("suspect"));
+        assertEq(queue.blockTrigger(ORIG), id, "precondition: the freeze recorded the request");
+        queue.freeze(ORIG);
+        vm.stopPrank();
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Frozen));
+        assertEq(queue.blockTrigger(ORIG), id, "trigger survives an evidence-free re-freeze");
+    }
+
+    /// @notice The Frozen -> Blacklisted escalation is the same story: a flat
+    ///         blacklist must escalate the state without discarding the evidence
+    ///         the freeze recorded.
+    function test_blacklist_escalation_preserves_trigger() public {
+        uint256 id = _queueErc20(1 ether);
+        vm.startPrank(ADMIN);
+        queue.freezeFromRequest(id, false, keccak256("suspect"));
+        queue.blacklist(ORIG);
+        vm.stopPrank();
+        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Blacklisted));
+        assertEq(queue.blockTrigger(ORIG), id, "trigger survives the escalation");
+    }
+
+    function test_blacklist_on_blacklisted_preserves_trigger() public {
+        uint256 id = _queueErc20(1 ether);
+        vm.startPrank(ADMIN);
+        queue.blacklistFromRequest(id, false, keccak256("theft"));
+        queue.blacklist(ORIG);
+        vm.stopPrank();
+        assertEq(queue.blockTrigger(ORIG), id, "trigger survives an evidence-free re-blacklist");
+    }
+
+    /// @notice The announcement carries the trigger that actually holds after the
+    ///         call, so a log reader reconstructs `blockTrigger` without reading
+    ///         storage.
+    function test_evidence_free_reblock_announces_the_retained_trigger() public {
+        uint256 id = _queueErc20(1 ether);
+        vm.startPrank(ADMIN);
+        queue.freezeFromRequest(id, false, keccak256("suspect"));
+        vm.expectEmit(true, true, true, true);
+        emit AccountBlocked(ORIG, IExitDelayQueue.BlockState.Blacklisted, id, bytes32(0));
+        queue.blacklist(ORIG);
+        vm.stopPrank();
+    }
+
+    /// @notice Evidence still overwrites evidence: a second by-request block on the
+    ///         same address records the newer request (last-write-wins).
+    function test_by_request_block_refreshes_the_trigger() public {
+        uint256 first = _queueErc20(1 ether);
+        uint256 second = _queueErc20(1 ether);
+        vm.startPrank(ADMIN);
+        queue.freezeFromRequest(first, false, keccak256("suspect"));
+        queue.blacklistFromRequest(second, false, keccak256("theft"));
+        vm.stopPrank();
+        assertEq(queue.blockTrigger(ORIG), second, "the newer evidence wins");
     }
 
     function test_freezeFromRequest_blocks_orig_and_owner() public {
@@ -1307,25 +1491,6 @@ contract ExitDelayQueueTest is Test {
         assertEq(
             uint256(queue.getRequest(stranger).status), uint256(IExitDelayQueue.ExitStatus.Executed)
         );
-    }
-
-    /// @notice A plain freeze on an already-blacklisted address holds the stronger
-    ///         state AND preserves the blacklist's recorded trigger — a no-evidence
-    ///         freeze must not erase why the address was blacklisted.
-    function test_freeze_on_blacklisted_preserves_trigger() public {
-        uint256 id = _queueErc20(1 ether);
-        uint256[] memory ids = new uint256[](1);
-        ids[0] = id;
-        vm.startPrank(ADMIN);
-        queue.blacklistFromRequest(ids, false, keccak256("theft"));
-        uint256 triggerBefore = queue.blockTrigger(ORIG);
-        assertEq(triggerBefore, id, "blacklist recorded the request id");
-
-        // Plain freeze carries no evidence (trigger 0): must not overwrite.
-        queue.freeze(ORIG);
-        vm.stopPrank();
-        assertEq(uint256(queue.blockStateOf(ORIG)), uint256(IExitDelayQueue.BlockState.Blacklisted));
-        assertEq(queue.blockTrigger(ORIG), triggerBefore, "trigger preserved through freeze");
     }
 
     /// @notice (b) HEALTHY original receiver → recoverStuckExit pays the STORED

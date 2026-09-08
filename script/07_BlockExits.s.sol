@@ -23,8 +23,11 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///         Owner resolves the request away. Everyone else keeps exiting
 ///         normally. `freeze` is the reversible hold (cleared by `unfreeze`);
 ///         `blacklist` is the confirmed state (cleared only by `unblacklist`).
-///         A frozen address escalates to blacklisted in place; a blacklisted
-///         address never downgrades to frozen.
+///         A frozen address escalates to blacklisted in place. A blacklisted
+///         address comes back down only through `downgrade`, which moves it to
+///         frozen in one call with no window in which it is unblocked; the flat
+///         `freeze` over a blacklisted address REVERTS on chain, which is why
+///         this script refuses it here.
 ///
 ///         `pause` - global. Halts `executeExit` and `recoverStuckExit` for
 ///         everyone. It does NOT stop new exits entering the queue: escrow still
@@ -52,10 +55,10 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///
 ///   export EXIT_DELAY_QUEUE=0x...            # the queue (required)
 ///   export EXIT_FEE_CONTROLLER=0x...         # controller; only the two kill-switch actions need it
-///   export BLOCK_ACTION=freeze               # freeze|blacklist|unfreeze|unblacklist|pause|unpause|verify
+///   export BLOCK_ACTION=freeze               # freeze|blacklist|downgrade|unfreeze|unblacklist|pause|unpause|verify
 ///                                            # |disable-perimeter|enable-perimeter (controller kill switch)
 ///
-///   # exactly one of these two for freeze/blacklist; actors only for the clears:
+///   # exactly one of these two for freeze/blacklist; actors only for downgrade and the clears:
 ///   export BLOCK_ACTORS=0xaaa,0xbbb          # addresses to block or clear
 ///   export BLOCK_REQUEST_IDS=41,42,43        # resolve the parties behind these requests
 ///
@@ -120,6 +123,8 @@ contract BlockExits is Script {
             _blockActors(true, actors, ids, freezeReceiver, reason);
         } else if (a == keccak256("blacklist")) {
             _blockActors(false, actors, ids, freezeReceiver, reason);
+        } else if (a == keccak256("downgrade")) {
+            _downgrade(actors, ids);
         } else if (a == keccak256("unfreeze")) {
             _clear(true, actors, ids);
         } else if (a == keccak256("unblacklist")) {
@@ -132,7 +137,7 @@ contract BlockExits is Script {
             _killSwitch(true);
         } else {
             revert(
-                "BLOCK_ACTION must be one of: freeze, blacklist, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
+                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
             );
         }
     }
@@ -227,18 +232,32 @@ contract BlockExits is Script {
         IExitDelayQueue.BlockState target =
             freezing ? IExitDelayQueue.BlockState.Frozen : IExitDelayQueue.BlockState.Blacklisted;
 
+        // A by-request call carries a trigger and a reason, which is what lets
+        // the queue accept it over an already-blacklisted party (it holds the
+        // stronger state and records the evidence). The flat by-address call
+        // carries neither, so the same shape REVERTS there.
+        bool carriesEvidence = ids.length > 0;
+
         uint256 changing;
+        bool wouldRevert;
         for (uint256 i = 0; i < actors.length; ++i) {
             IExitDelayQueue.BlockState from = queue.blockStateOf(actors[i]);
             IExitDelayQueue.BlockState to = target;
             string memory note;
-            if (from == target) {
-                note = "already in this state (evidence refreshed, no state change)";
-            } else if (
+            if (
                 from == IExitDelayQueue.BlockState.Blacklisted && target == IExitDelayQueue.BlockState.Frozen
             ) {
-                note = "already blacklisted - freeze will NOT downgrade it";
                 to = from;
+                if (carriesEvidence) {
+                    note = "already blacklisted - holds the stronger state, evidence refreshed";
+                } else {
+                    note = "WOULD REVERT (already blacklisted - use BLOCK_ACTION=downgrade)";
+                    wouldRevert = true;
+                }
+            } else if (from == target) {
+                note = carriesEvidence
+                    ? "already in this state (evidence refreshed, no state change)"
+                    : "already in this state (no state change, recorded evidence kept)";
             } else {
                 note = "WILL CHANGE";
                 ++changing;
@@ -252,10 +271,50 @@ contract BlockExits is Script {
         console2.log("");
         console2.log("actors resolved      :", actors.length);
         console2.log("state changes        :", changing);
+        // The on-chain batch is atomic, so one refused address wastes the whole
+        // Safe round. Refuse here instead, while it costs nothing.
+        require(
+            !wouldRevert,
+            "freeze would revert: an address is already blacklisted - use BLOCK_ACTION=downgrade to move it to frozen"
+        );
         if (changing == 0) {
             console2.log("NOTE: no state changes. The call still succeeds and re-emits AccountBlocked.");
         }
         _emitCalldata(address(queue), data);
+    }
+
+    // --- Blacklisted -> Frozen ------------------------------------------
+
+    /// @dev The one call that weakens a block without unblocking first, for an
+    ///      address blacklisted in haste that should only be held while it is
+    ///      investigated. The queue reverts on any address that is not
+    ///      Blacklisted and the batch is atomic, so every address is checked here.
+    function _downgrade(address[] memory actors, uint256[] memory ids) internal view {
+        require(actors.length > 0, "set BLOCK_ACTORS");
+        require(ids.length == 0, "downgrade is by address only - the queue has no by-request downgrade");
+
+        bool wouldRevert;
+        for (uint256 i = 0; i < actors.length; ++i) {
+            IExitDelayQueue.BlockState from = queue.blockStateOf(actors[i]);
+            bool ok = from == IExitDelayQueue.BlockState.Blacklisted;
+            if (!ok) wouldRevert = true;
+            console2.log(
+                string.concat(
+                    "  ",
+                    vm.toString(actors[i]),
+                    "  ",
+                    _stateName(from),
+                    ok ? " -> Frozen" : "   WOULD REVERT (not blacklisted)"
+                )
+            );
+        }
+        console2.log("");
+        require(
+            !wouldRevert,
+            "downgrade requires every address to be Blacklisted - freeze is how a clear address is held"
+        );
+        console2.log("NOTE: the recorded trigger is kept - a downgrade is still a block.");
+        _emitCalldata(address(queue), abi.encodeWithSignature("downgradeToFrozen(address[])", actors));
     }
 
     // --- Per-actor clear ------------------------------------------------
