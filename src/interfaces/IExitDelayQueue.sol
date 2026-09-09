@@ -223,6 +223,15 @@ interface IExitDelayQueue {
     ///         `0`, this contract, the request token, or WRBTC. The stored request is
     ///         NEVER re-targeted (`altReceiver` is a payout-time destination only), so
     ///         request immutability and the block gate still hold.
+    ///
+    ///         GAS: send this call at least 3,200,000 gas — a fixed 3,000,000
+    ///         budget for the stored-receiver attempt plus a 200,000 floor for the
+    ///         fall-through. That reservation is what stops a caller starving the
+    ///         attempt into a false bounce and redirecting a healthy exit, so an
+    ///         under-funded call reverts `InsufficientGasForRecovery` rather than
+    ///         doing anything at all. It sits comfortably inside Rootstock's block
+    ///         gas limit but well above what a wallet's own estimate suggests, so
+    ///         a caller that lets the wallet decide will be refused.
     function recoverStuckExit(uint256 id, address altReceiver) external;
 
     // ─── Block model ─────────────────────────────────────────────

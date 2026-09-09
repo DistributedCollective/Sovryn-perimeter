@@ -35,6 +35,29 @@ contract FeeOnTransferERC20 is ERC20 {
     }
 }
 
+/// @dev A token that accepts every transfer until an address is added to its
+///      blocklist, then refuses to move that address's balance. Models the
+///      upgradeable third-party token that adds a blocklist, a pause or a
+///      migration AFTER funds are already escrowed.
+contract BlocklistingERC20 is ERC20 {
+    mapping(address => bool) public blocked;
+
+    constructor() ERC20("Blocklisting", "BLK") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function block_(address a) external {
+        blocked[a] = true;
+    }
+
+    function _transfer(address from, address to, uint256 value) internal override {
+        require(!blocked[from], "BLK: sender blocked");
+        super._transfer(from, to, value);
+    }
+}
+
 /// @dev Minimal WRBTC: mints on deposit-equivalent, burns + sends native on
 ///      withdraw (unwrap path).
 /// @dev A token that behaves normally until `setBurnOnTransfer` is flipped, then
@@ -1011,6 +1034,68 @@ contract ExitDelayQueueTest is Test {
         });
         vm.prank(OWNER);
         routeId = queue.setRecoveryRoute(route);
+    }
+
+    // ── the limit of "every reachable Queued state has a remedy" ──
+
+    /// @notice The four disposal legs all end in the same transfer, so a token
+    ///         that later refuses to move the queue's balance takes the escrow
+    ///         with it: execution, recovery and BOTH owner resolutions revert, and
+    ///         nothing on chain — the Owner included — can free it. This is the
+    ///         boundary of the remedy claim, which holds over the queue's own
+    ///         state machine and not over third-party token behaviour. It is
+    ///         pinned so that any later change which appears to add a remedy has
+    ///         to say what it really does with the money.
+    function test_a_token_that_blocks_the_queue_traps_the_escrow_on_every_leg() public {
+        BlocklistingERC20 blk = new BlocklistingERC20();
+        blk.mint(address(source), 100 ether);
+        vm.prank(address(this));
+        uint256 id = source.recordERC20(
+            address(blk), 10 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR, false
+        );
+
+        IExitDelayQueue.RecoveryRoute memory route = IExitDelayQueue.RecoveryRoute({
+            active: true,
+            surfaceId: SURFACE,
+            subProduct: SUBPRODUCT,
+            token: address(blk),
+            destination: address(0xDE57),
+            topUpPool: false
+        });
+        vm.prank(OWNER);
+        bytes32 routeId = queue.setRecoveryRoute(route);
+
+        // The token turns hostile only after the money is already in custody.
+        blk.block_(address(queue));
+        vm.warp(block.timestamp + DELAY);
+
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+
+        vm.prank(OWNR);
+        vm.expectRevert(bytes("BLK: sender blocked"));
+        queue.executeExit(id);
+
+        vm.prank(OWNR);
+        vm.expectRevert(bytes("BLK: sender blocked"));
+        queue.recoverStuckExit(id, address(0xA17));
+
+        // Leg 2 needs a blacklisted source party; give it one, and it still cannot pay.
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        vm.prank(ADMIN);
+        vm.expectRevert(bytes("BLK: sender blocked"));
+        queue.resolveToProtocol(ids, routeId);
+
+        vm.prank(OWNER);
+        vm.expectRevert(bytes("BLK: sender blocked"));
+        queue.resolveBySIP(ids, address(0xD00D));
+
+        assertEq(
+            uint256(queue.getRequest(id).status),
+            uint256(IExitDelayQueue.ExitStatus.Queued),
+            "the request survives every attempt, and so does the money"
+        );
     }
 
     function test_resolveToProtocol_requires_blacklisted_source() public {

@@ -1036,6 +1036,17 @@ contract ExitDelayQueue is
     /// @dev ERC20 safeTransfer / native sendValue / WRBTC-unwrap-then-sendValue.
     ///      No fail-open: a reverting receiver rolls the whole call back
     ///      (status already terminal → held until Leg-3 redirects).
+    ///
+    ///      LIMIT OF THE REMEDY CLAIM. All four disposal legs — execute, recover,
+    ///      resolve-to-protocol, resolve-by-SIP — end here. Every reachable Queued
+    ///      state has a remedy within this contract's own state machine, but not
+    ///      beyond it: if an escrowed ERC20 later refuses to move this contract's
+    ///      balance (an upgradeable token adding a blocklist, a pause, a
+    ///      migration), all four revert and the escrow is unreachable by anyone,
+    ///      the Owner included. That is a property of holding third-party custody,
+    ///      not something this contract can guard against; it is stated here so it
+    ///      is not inherited unnoticed. None of the launch underlyings is known to
+    ///      carry a blocklist.
     function _payout(address token, address to, uint128 amount, bool unwrap) internal {
         if (token == address(0)) {
             Address.sendValue(payable(to), amount);
