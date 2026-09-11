@@ -1020,6 +1020,35 @@ contract ExitFeeControllerTest is Test {
         vm.stopPrank();
     }
 
+    /// @dev Pins where the delay state lives in the proxy. Slots 265, 266, 269
+    ///      and 270 are declared and never written; the bypass discovery set
+    ///      must sit at 267..268 and the packed switch and length at 271, so a
+    ///      proxy whose storage already uses those positions reads the same
+    ///      values after an upgrade.
+    function test_storage_positions_of_the_delay_state() public {
+        vm.startPrank(ADMIN);
+        controller.setGlobalDelaySeconds(DELAY);
+        controller.setSecurityPerimeterEnabled(true);
+        controller.setSurfaceBypass(SURFACE, _bp(true, false));
+        controller.setSubProductBypass(SURFACE, IXUSD, _bp(true, false));
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, true));
+        vm.stopPrank();
+
+        address proxy = address(controller);
+        assertEq(
+            uint256(vm.load(proxy, bytes32(uint256(271)))),
+            uint256(1) | (uint256(DELAY) << 8),
+            "slot 271: securityPerimeterEnabled at offset 0, globalDelaySeconds at offset 1"
+        );
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(267)))), 1, "slot 267: bypass discovery set length");
+        assertEq(controller.bypassSurfaceIds().length, 1);
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(265)))), 0, "slot 265 is never written");
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(266)))), 0, "slot 266 is never written");
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(269)))), 0, "slot 269 is never written");
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(270)))), 0, "slot 270 is never written");
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(272)))), 0, "slot 272 is the first reserved slot");
+    }
+
     function test_globalDelay_only_owner() public {
         vm.prank(GUARDIAN); // guardian is NOT owner; global delay is owner-only
         vm.expectRevert();

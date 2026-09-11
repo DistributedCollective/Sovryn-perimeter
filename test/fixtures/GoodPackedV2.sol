@@ -9,17 +9,16 @@ import {IExitFeeController} from "../../src/ExitFeeController.sol";
 
 /// @dev Test fixture ONLY. NOT a real upgrade candidate.
 ///
-///      Models a SAFE upgrade that adds two packed uint128 fields after
-///      the controller's existing state. Both fields share the FIRST
-///      reclaimed __gap slot (Solidity packs uint128 + uint128 into
-///      one 32-byte slot at offsets 0 and 16). The __gap should
-///      therefore shrink by exactly 1 slot, NOT 2.
+///      Models a SAFE upgrade that adds storage after the controller's
+///      existing state: one full-slot field in the first reserved slot (272),
+///      then two uint128 fields that Solidity packs into the next slot (273, at
+///      offsets 0 and 16). The __gap therefore shrinks by exactly 2 slots,
+///      NOT 3.
 ///
-///      The naive accounting (sum of per-entry slot spans) would see
-///      "2 new entries, span 1 each = 2 slots reclaimed" and reject
-///      this as inconsistent with a 1-slot gap shrinkage. The correct
-///      accounting (UNION of slot ranges) sees both entries at slot
-///      271 covering [271, 272) = 1 slot.
+///      The naive accounting (sum of per-entry slot spans) would see "3 new
+///      entries, span 1 each = 3 slots reclaimed" and reject this as
+///      inconsistent with a 2-slot gap shrinkage. The correct accounting
+///      (UNION of slot ranges) sees [272, 274) = 2 slots.
 ///
 ///      tools/diff-storage-layouts.py MUST accept this layout as
 ///      upgrade-safe.
@@ -27,20 +26,17 @@ import {IExitFeeController} from "../../src/ExitFeeController.sol";
 ///      HOW TO REGENERATE (do this whenever ExitFeeController's storage
 ///      changes): mirror `forge inspect ExitFeeController storageLayout`
 ///      EXACTLY — every own variable (slots 251..271 today), in the same
-///      order, with the same struct types (imported from
+///      order, with the same labels and the same struct types (imported from
 ///      IExitFeeController so the type definitions are byte-identical) —
-///      then place the two packed uint128 fields at the FIRST still-unused
-///      __gap slot and shrink __gap by 1 (29 -> 28). The mirror below is
-///      current as of the security-perimeter delay extension (admin alone in
-///      its shipped slot, bypass tiers, enumeration
-///      sets, then the two delay scalars in a reclaimed gap slot).
+///      then add the new fields at the first reserved slot and shrink __gap
+///      by the number of slots they occupy (29 -> 27).
 contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
 
     uint16 public constant MAX_BPS = 10_000;
 
-    // ── Mirror of ExitFeeController own storage, slots 251..270 ──────────
+    // ── Mirror of ExitFeeController own storage, slots 251..271 ──────────
 
     // slot 251 (packed: bool@0, address@1)
     bool public exitFeeEnabled;
@@ -63,14 +59,17 @@ contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable
     EnumerableSet.Bytes32Set internal _surfaceBypassKeys; // slots 261..262 (2 slots)
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductBypassKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorBypassKeys;
-    EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 265..266 (2 slots)
+    mapping(bytes32 => mapping(address => bool)) private _unusedSlot265;
+    mapping(bytes32 => EnumerableSet.AddressSet) private _unusedSlot266;
+    EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 267..268 (2 slots)
+    EnumerableSet.Bytes32Set private _unusedSlots269To270; // slots 269..270 (2 slots)
 
-    // slot 267 (packed: bool@0, uint32@1) — the delay scalars.
+    // slot 271 (packed: bool@0, uint32@1) — the delay scalars.
     bool public securityPerimeterEnabled;
     uint32 public globalDelaySeconds;
 
     // A full-slot field at 272, then two uint128 packed into slot 273 at
-    // offset 0 and offset 16. The gap shrinks by two slots, to __gap[27].
+    // offset 0 and offset 16.
     uint256 public newFull;
     uint128 public newA;
     uint128 public newB;

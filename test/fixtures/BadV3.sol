@@ -25,11 +25,11 @@ import {IExitFeeController} from "../../src/ExitFeeController.sol";
 ///
 ///      HOW TO REGENERATE (do this whenever ExitFeeController's storage
 ///      changes): mirror `forge inspect ExitFeeController storageLayout`
-///      EXACTLY (slots 251..267 today, __gap unchanged at [33]) — the
+///      EXACTLY (slots 251..271 today, __gap unchanged at [29]) — the
 ///      ONLY intentional deviation is the LOCAL RatePolicy below whose
-///      two members are swapped. Everything else must match byte-for-byte
-///      so the tool rejects for the struct reorder and NOT for a missing
-///      or moved variable. DelayBypassPolicy is imported from
+///      two members are swapped. Everything else must match byte-for-byte,
+///      labels included, so the tool rejects for the struct reorder and NOT
+///      for a missing or moved variable. DelayBypassPolicy is imported from
 ///      IExitFeeController so it stays identical; only RatePolicy is
 ///      redefined locally to carry the reorder.
 contract BadV3 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
@@ -47,7 +47,7 @@ contract BadV3 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
 
     uint16 public constant MAX_BPS = 10_000;
 
-    // ── Mirror of ExitFeeController own storage, slots 251..270 ──────────
+    // ── Mirror of ExitFeeController own storage, slots 251..271 ──────────
 
     // slot 251 (packed: bool@0, address@1)
     bool public exitFeeEnabled;
@@ -60,7 +60,7 @@ contract BadV3 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorKeys;
 
-    // slot 257 (packed: bool@0, uint32@1, address@5) — DO NOT reorder.
+    // slot 257 — `admin` alone.
     address public admin;
 
     // slots 258..270 — DelayBypassPolicy imported so it stays identical.
@@ -70,13 +70,17 @@ contract BadV3 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     EnumerableSet.Bytes32Set internal _surfaceBypassKeys; // slots 261..262 (2 slots)
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductBypassKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorBypassKeys;
-    EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 265..266 (2 slots)
+    mapping(bytes32 => mapping(address => bool)) private _unusedSlot265;
+    mapping(bytes32 => EnumerableSet.AddressSet) private _unusedSlot266;
+    EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 267..268 (2 slots)
+    EnumerableSet.Bytes32Set private _unusedSlots269To270; // slots 269..270 (2 slots)
 
-    // __gap unchanged — this fixture adds NO storage; it only reorders a struct.
+    // slot 271 (packed: bool@0, uint32@1) — the delay scalars.
     bool public securityPerimeterEnabled;
     uint32 public globalDelaySeconds;
 
-    uint256[33] private __gap;
+    // __gap unchanged — this fixture adds NO storage; it only reorders a struct.
+    uint256[29] private __gap;
 
     function _authorizeUpgrade(address) internal view override onlyOwner {}
 }

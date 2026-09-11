@@ -68,15 +68,25 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     //   262        _surfaceBypassKeys._indexes (mapping head)            ┘
     //   263        _subProductBypassKeys    mapping head (enumeration index)
     //   264        _actorBypassKeys         mapping head (enumeration index)
-    //   265        _bypassSurfaceIds._values  (Bytes32Set array head)    ┐ 2 slots
-    //   266        _bypassSurfaceIds._indexes (mapping head)             ┘
-    //   267        securityPerimeterEnabled (1 byte) + globalDelaySeconds
+    //   265        _unusedSlot265           nested-mapping head -- never read or written
+    //   266        _unusedSlot266           mapping head        -- never read or written
+    //   267        _bypassSurfaceIds._values  (Bytes32Set array head)    ┐ 2 slots
+    //   268        _bypassSurfaceIds._indexes (mapping head)             ┘
+    //   269        _unusedSlots269To270     (Bytes32Set)                 ┐ 2 slots, never
+    //   270                                                              ┘ read or written
+    //   271        securityPerimeterEnabled (1 byte) + globalDelaySeconds
     //              (4 bytes) -- PACKED; 27 bytes of the slot are unused.
-    //   268 .. 300 __gap[33] -- preserves the OZ-style 50-slot namespace
-    //                           (50 - 17 own slots used).
+    //   272 .. 300 __gap[29] -- preserves the OZ-style 50-slot namespace
+    //                           (50 - 21 own slots used).
     //
-    // Own slots: 251 + 252..256 + 257 + 258..267 = 17, so __gap = 50 - 17 = 33
+    // Own slots: 251 + 252..256 + 257 + 258..271 = 21, so __gap = 50 - 21 = 29
     // and the namespace ends at slot 300.
+    //
+    // Slots 265, 266, 269 and 270 are declared and never read or written. They
+    // must not be removed: `_bypassSurfaceIds` and the delay scalars are found by
+    // position, so removing them moves those variables onto storage an upgraded
+    // proxy holds for something else. They must not be reused either: on an
+    // upgraded proxy they may hold values.
     //
     // Upgrades that add storage to THIS contract MUST consume from __gap and
     // reduce its length by exactly the number of slots added. They MUST NOT
@@ -193,6 +203,14 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductBypassKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorBypassKeys;
 
+    /// @dev Slots 265 and 266. Declared and never read or written. Not to be
+    ///      removed (the variables after them are found by position) or reused
+    ///      (an upgraded proxy may hold values in them).
+    // aderyn-ignore-next-line(unused-state-variable)
+    mapping(bytes32 => mapping(address => bool)) private _unusedSlot265;
+    // aderyn-ignore-next-line(unused-state-variable)
+    mapping(bytes32 => EnumerableSet.AddressSet) private _unusedSlot266;
+
     /// @dev ANY-TIER-TOUCHED master surface-id set for delay bypasses.
     ///      Every bypass WRITER — `_writeSurfaceBypass` (via
     ///      `setSurfaceBypass`), `_writeSubProductBypass`, `_writeActorBypass` —
@@ -208,6 +226,11 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///      so a `removeSurfaceBypass` while sub/actor entries remain live does not
     ///      remove the id from discovery — the inspector still probes every tier.
     EnumerableSet.Bytes32Set internal _bypassSurfaceIds;
+
+    /// @dev Slots 269 and 270. Declared and never read or written; the same
+    ///      rule as slots 265 and 266 applies.
+    // aderyn-ignore-next-line(unused-state-variable)
+    EnumerableSet.Bytes32Set private _unusedSlots269To270;
 
     /// @notice Global kill switch for the DELAY perimeter. Independent of
     ///         `exitFeeEnabled`: turning fees off does NOT disable the
@@ -227,7 +250,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     uint32 public globalDelaySeconds;
 
     // aderyn-ignore-next-line(unused-state-variable)
-    uint256[33] private __gap;
+    uint256[29] private __gap;
 
     // ─── Custom errors ──────────────────────────────────────────────────
 
