@@ -1531,13 +1531,18 @@ contract ExitDelayQueueTest is Test {
         assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Executed));
     }
 
-    /// @notice The recovery gas boundary as built. A receiver that accepts within
-    ///         RECOVER_PAYOUT_GAS is paid. A receiver that would accept only with
-    ///         more gas is treated as refusing and the money goes to the alternate,
-    ///         although a plain delivery with enough gas pays that same receiver.
+    /// @notice The recovery gas boundary as built. The stored-receiver attempt is
+    ///         given RECOVER_PAYOUT_GAS; after the self-call's own work and the
+    ///         63/64 rule on the inner send, a native receiver can spend a little
+    ///         under 2,900,000 of a 3,000,000 budget. A receiver that accepts within
+    ///         that is paid. A receiver that would accept only with more gas is
+    ///         treated as refusing and the money goes to the alternate, although a
+    ///         plain delivery with enough gas pays that same receiver. The two
+    ///         receivers sit about 50,000 gas either side of that edge, so moving
+    ///         the budget by about 60,000 in either direction fails this test.
     function test_recover_gas_boundary_as_built() public {
-        GasHungryReceiver within = new GasHungryReceiver(2_000_000);
-        GasHungryReceiver beyond = new GasHungryReceiver(3_100_000);
+        GasHungryReceiver within = new GasHungryReceiver(2_850_000);
+        GasHungryReceiver beyond = new GasHungryReceiver(2_950_000);
         uint256 idWithin =
             source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(within));
         uint256 idBeyond =
