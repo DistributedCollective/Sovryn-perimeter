@@ -206,9 +206,9 @@ interface IExitDelayQueue {
     function executeExits(uint256[] calldata ids) external;
 
     /// @notice Verify-by-attempting stuck-exit recovery. Callable ONLY by the
-    ///         frozen-metadata `{originator, owner}` set (same as `executeExit`; the
-    ///         receiver is NEVER an executor). Requires the request Queued, unlocked,
-    ///         and the queue not paused.
+    ///         frozen-metadata `{originator, owner}` set (the receiver is NEVER an
+    ///         executor). Requires the request Queued, unlocked, and the queue not
+    ///         paused.
     ///
     ///         Attempts the STORED-receiver payout FIRST; pays `altReceiver` ONLY if
     ///         the stored-receiver payout genuinely bounces — so a HEALTHY exit is

@@ -138,7 +138,8 @@ interface IExitFeeController {
     ) external view returns (uint32 d, address effOrig, address effOwner);
 
     /// @notice Inner per-actor delay view (off / inactive / bypass ⇒ 0, else
-    ///         `globalDelaySeconds`), evaluated on an ALREADY-effective actor.
+    ///         `globalDelaySeconds`), evaluated on the actor passed — the
+    ///         originator, as `quoteExitDelayFor` does.
     ///         Handles the disabled-perimeter case identically (returns 0 when
     ///         the perimeter is off). Hot-path callers use `quoteExitDelayFor`;
     ///         this is for off-chain quoting and the inner resolver.

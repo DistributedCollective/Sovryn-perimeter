@@ -74,8 +74,16 @@ contract InspectController is Script {
         console2.log("");
 
         console2.log(unicode"── Delay perimeter (global) ──────────────────────────");
-        console2.log("  securityPerimeterEnabled:", c.securityPerimeterEnabled());
-        console2.log("  globalDelaySeconds:      ", uint256(c.globalDelaySeconds()));
+        bool delayOn = c.securityPerimeterEnabled();
+        uint32 delayLength = c.globalDelaySeconds();
+        console2.log("  securityPerimeterEnabled:", delayOn);
+        console2.log(
+            string.concat(
+                "  globalDelaySeconds:       ",
+                vm.toString(uint256(delayLength)),
+                _delayLengthNote(delayOn, delayLength)
+            )
+        );
         console2.log("  admin:                   ", c.admin());
         console2.log("");
 
@@ -97,6 +105,16 @@ contract InspectController is Script {
         //    arbitrary surfaceId (never registered as a named fee surface) is
         //    still fully surfaced here.
         _printDelayBypassRegistry(c);
+    }
+
+    /// @dev What a delay length means beside its raw value. Zero is the unset
+    ///      state: the controller refuses to switch the delay on while it holds,
+    ///      and a switch that reads on with a zero length holds nothing. A
+    ///      non-zero length needs no note.
+    function _delayLengthNote(bool enabled, uint32 length) internal pure returns (string memory) {
+        if (length != 0) return "";
+        if (enabled) return "  WARNING: switched on with the length unset (0) - no withdrawal is held";
+        return "  (0 = unset: switching the delay on is refused until the Owner sets a length)";
     }
 
     /// @dev single-guardian assertion. Reads the queue proxy from its

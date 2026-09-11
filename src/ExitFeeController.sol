@@ -1001,8 +1001,9 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     {
         // Handles the disabled-perimeter case identically (returns 0 when the
         // perimeter is off) so an off-chain caller of the inner view never gets
-        // a non-zero delay while the perimeter is disabled. Callers pass an
-        // ALREADY-effective actor (never a raw wrapper).
+        // a non-zero delay while the perimeter is disabled. The actor is the
+        // address the bypass tier is looked up on: the originator, as in
+        // `quoteExitDelayFor`.
         if (!securityPerimeterEnabled) return 0;
         return _resolveDelay(surfaceId, subProduct, effectiveActor_);
     }

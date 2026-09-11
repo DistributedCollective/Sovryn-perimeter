@@ -159,12 +159,18 @@ contract BlockExits is Script {
 
     // --- Controller kill switch -----------------------------------------
 
-    /// @dev The OPPOSITE lever to everything else in this script: disabling
-    ///      the perimeter makes every charged exit pay straight out - no fee,
-    ///      no delay, nothing escrows. It is a LIVENESS escape for a broken
-    ///      perimeter, not an incident response; during an attack it is the
-    ///      last thing to touch. Funds already escrowed are NOT released by
+    /// @dev The OPPOSITE lever to everything else in this script: switching
+    ///      the withdrawal delay off makes every hooked withdrawal pay straight
+    ///      out - nothing is held and nothing escrows. The Perimeter fee has its
+    ///      own switch and is not touched here. It is a LIVENESS escape for a
+    ///      broken perimeter, not an incident response; during an attack it is
+    ///      the last thing to touch. Funds already escrowed are NOT released by
     ///      it - they stay in the queue behind their own holds and blocks.
+    ///
+    ///      Switching on reverts on the controller while the global delay length
+    ///      is unset (0), and the multisig records a failed inner call without
+    ///      reverting its own transaction. So the length is read first and the
+    ///      preview refuses, rather than handing out calldata that fails silently.
     function _killSwitch(bool enabled) internal view {
         require(
             address(controller) != address(0),
@@ -174,20 +180,32 @@ contract BlockExits is Script {
         console2.log("controller admin     :", controller.admin());
         console2.log("controller owner     :", controller.owner());
         bool current = controller.securityPerimeterEnabled();
+        uint32 length = controller.globalDelaySeconds();
         console2.log("perimeter enabled    :", current);
+        console2.log("global delay length  :", uint256(length), "seconds (0 = unset)");
         if (current == enabled) {
             console2.log("ALREADY in the requested state - nothing to submit.");
             return;
         }
+        if (enabled && length == 0) {
+            console2.log("WOULD REVERT (DelayUnset): the controller refuses to switch the delay on while");
+            console2.log("its length is unset. The Owner sets it first with setGlobalDelaySeconds.");
+            revert(
+                "enable-perimeter would revert: the global delay length is unset (0) - the Owner must call setGlobalDelaySeconds first"
+            );
+        }
         console2.log(
             enabled
-                ? "Re-arms the perimeter: every active surface charges and escrows again."
-                : "LIVENESS ESCAPE: every charged exit pays straight out - no fee, no delay, nothing escrows. Already-escrowed funds stay held in the queue."
+                ? "Switches the withdrawal delay back on: every hooked withdrawal that is not exempt is held for the global delay length again. The Perimeter fee has its own switch."
+                : "LIVENESS ESCAPE: every hooked withdrawal pays straight out - nothing is held, nothing escrows. The Perimeter fee has its own switch. Already-escrowed funds stay held in the queue."
         );
         _emitCalldata(
             address(controller),
             abi.encodeCall(ExitFeeController.setSecurityPerimeterEnabled, (enabled))
         );
+        console2.log("The multisig transaction succeeds even when the call inside it reverts. After it");
+        console2.log("executes, read securityPerimeterEnabled() on the controller and confirm it reads");
+        console2.log(enabled ? "true." : "false.");
     }
 
     // --- Per-actor block ------------------------------------------------

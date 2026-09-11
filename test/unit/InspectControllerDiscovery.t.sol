@@ -17,6 +17,10 @@ contract InspectHarness is InspectController {
     function probeSurfaceIds(ExitFeeController c) external view returns (bytes32[] memory) {
         return _probeSurfaceIds(c);
     }
+
+    function delayLengthNote(bool enabled, uint32 length) external pure returns (string memory) {
+        return _delayLengthNote(enabled, length);
+    }
 }
 
 /// @title — InspectController discovery completeness
@@ -89,6 +93,22 @@ contract InspectControllerDiscoveryTest is Test {
             _contains(ids, ARB_ACTOR),
             "id retained in probe set while actor tier live after surface hard-remove"
         );
+    }
+
+    /// @dev The status dump never prints a zero length bare: zero means unset,
+    ///      switching on is refused while it is, and a switch that reads on with
+    ///      a zero length holds nothing.
+    function test_status_dump_explains_a_zero_delay_length() public view {
+        assertEq(
+            harness.delayLengthNote(false, 0),
+            "  (0 = unset: switching the delay on is refused until the Owner sets a length)"
+        );
+        assertEq(
+            harness.delayLengthNote(true, 0),
+            "  WARNING: switched on with the length unset (0) - no withdrawal is held"
+        );
+        assertEq(harness.delayLengthNote(false, 1 hours), "");
+        assertEq(harness.delayLengthNote(true, 1 hours), "");
     }
 
     /// @dev The probe set is deduplicated: a surfaceId that is named AND carries

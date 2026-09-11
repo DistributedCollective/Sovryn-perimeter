@@ -395,8 +395,24 @@ contract BlockExitsTest is Test {
 
     function test_enable_perimeter_previews_when_disabled() public {
         ExitFeeController ctrl = _deployController();
+        ctrl.setGlobalDelaySeconds(1 days);
         script.initController(address(ctrl));
         script.dispatch("enable-perimeter", _noAddrs(), _noIds(), false, "");
         assertFalse(ctrl.securityPerimeterEnabled(), "preview must not change state");
+    }
+
+    /// @notice The controller refuses to switch the delay on while its length
+    ///         is unset, and through the multisig that refusal does not revert
+    ///         the outer transaction. The preview must refuse before any
+    ///         calldata is produced.
+    function test_enable_perimeter_refuses_while_the_delay_length_is_unset() public {
+        ExitFeeController ctrl = _deployController();
+        script.initController(address(ctrl));
+        vm.expectRevert(
+            bytes(
+                "enable-perimeter would revert: the global delay length is unset (0) - the Owner must call setGlobalDelaySeconds first"
+            )
+        );
+        script.dispatch("enable-perimeter", _noAddrs(), _noIds(), false, "");
     }
 }
