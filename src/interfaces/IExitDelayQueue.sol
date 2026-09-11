@@ -135,6 +135,7 @@ interface IExitDelayQueue {
     error NotResolvableBySIP(uint256 id); //      Leg-3 bounded predicate not satisfied
     error UnwrapNonWrbtc(); //                    unwrapOnDelivery set on a non-WRBTC token (guard)
     error InvalidAltReceiver(address altReceiver); // recoverStuckExit altReceiver ∈ {0,this,token,wrbtc}
+    error InvalidReceiver(address receiver); //   ingress: the queue itself, or WRBTC when delivery sends native RBTC
     error SelfOnly(); //                          payoutExternal trampoline is self-call-only
     error ZeroAddress();
     error EmptyIds();

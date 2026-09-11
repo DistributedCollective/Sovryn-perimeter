@@ -256,7 +256,7 @@ contract ExitDelayQueue is
     ) external nonReentrant onlyAllowedSource returns (uint256 id) {
         //  guard: the delivery-time unwrap can only be set on WRBTC escrow.
         if (unwrapOnDelivery && token != wrbtc) revert UnwrapNonWrbtc();
-        _validateIngress(token, amount, delaySeconds, effOrig, effOwner, receiver);
+        _validateIngress(token, amount, delaySeconds, effOrig, effOwner, receiver, unwrapOnDelivery);
 
         // ERC20 pull with receipt proof (High-3): measure before/after so a
         // fee-on-transfer/rebasing token cannot silently mis-escrow.
@@ -292,7 +292,7 @@ contract ExitDelayQueue is
         address effOwner,
         address receiver
     ) external nonReentrant onlyAllowedSource returns (uint256 id) {
-        _validateIngress(token, amount, delaySeconds, effOrig, effOwner, receiver);
+        _validateIngress(token, amount, delaySeconds, effOrig, effOwner, receiver, false);
 
         // Non-backing surplus = (current backing balance) − (already-escrowed).
         // Require it covers `amount` (delta >= amount). Revert only when
@@ -317,7 +317,7 @@ contract ExitDelayQueue is
         address receiver
     ) external payable nonReentrant onlyAllowedSource returns (uint256 id) {
         if (msg.value != amount) revert AmountMismatch(msg.value, amount);
-        _validateIngress(address(0), amount, delaySeconds, effOrig, effOwner, receiver);
+        _validateIngress(address(0), amount, delaySeconds, effOrig, effOwner, receiver, false);
         id = _record(
             address(0), amount, delaySeconds, surfaceId, subProduct, effOrig, effOwner, receiver, false
         );
@@ -342,7 +342,7 @@ contract ExitDelayQueue is
         address effOwner,
         address receiver
     ) external nonReentrant onlyAllowedSource returns (uint256 id) {
-        _validateIngress(address(0), amount, delaySeconds, effOrig, effOwner, receiver);
+        _validateIngress(address(0), amount, delaySeconds, effOrig, effOwner, receiver, false);
         uint256 backing = address(this).balance;
         uint256 escrowed = _totalEscrowed[address(0)];
         uint256 delta = backing > escrowed ? backing - escrowed : 0;
@@ -374,12 +374,13 @@ contract ExitDelayQueue is
     // ─── Ingress helpers ────────────────────────────────────────────────
 
     function _validateIngress(
-        address, /*token — reserved for future per-token gating*/
+        address token,
         uint128 amount,
         uint32 delaySeconds,
         address effOrig,
         address effOwner,
-        address receiver
+        address receiver,
+        bool unwrapOnDelivery
     ) internal view {
         if (amount == 0) revert ZeroAmount();
         // AmountTooLarge: the record* ABI takes `amount` as uint128
@@ -394,6 +395,13 @@ contract ExitDelayQueue is
         // here. We still reject a below-floor delay and zero-address parties.
         if (delaySeconds < minimumDelaySeconds) revert DelayBelowFloor(delaySeconds, minimumDelaySeconds);
         if (effOrig == address(0) || effOwner == address(0) || receiver == address(0)) revert ZeroAddress();
+        // A receiver delivery cannot actually pay. Paying this queue sends the
+        // money straight back in; WRBTC credits native RBTC to its sender - this
+        // queue - as wrapped tokens. Either way delivery would mark the request
+        // Executed while the money stayed here as surplus. WRBTC paid as a token,
+        // without unwrapping, sends no native RBTC and is not refused.
+        if (receiver == address(this)) revert InvalidReceiver(receiver);
+        if (receiver == wrbtc && (token == address(0) || unwrapOnDelivery)) revert InvalidReceiver(receiver);
     }
 
     function _record(

@@ -492,6 +492,68 @@ contract ExitDelayQueueTest is Test {
         assertEq(r.token, address(wrbtc));
     }
 
+    // ── ingress: a receiver the queue cannot pay is refused ──
+    //
+    // Paying the queue itself sends the money back into the queue, and WRBTC
+    // credits native RBTC to its sender - the queue - as wrapped tokens. Either
+    // way delivery would mark the request executed while the money stayed
+    // inside the queue as surplus.
+
+    function test_recordERC20_refuses_the_queue_as_receiver() public {
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidReceiver.selector, address(queue)));
+        source.recordERC20(address(token), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, address(queue), false);
+    }
+
+    function test_recordERC20_refuses_wrbtc_as_receiver_when_delivery_unwraps() public {
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidReceiver.selector, address(wrbtc)));
+        source.recordERC20(address(wrbtc), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, address(wrbtc), true);
+    }
+
+    /// @dev WRBTC paid as a token, without unwrapping, sends no native RBTC, so
+    ///      naming the WRBTC contract as receiver is not refused on that path.
+    function test_recordERC20_accepts_wrbtc_as_receiver_when_paid_as_a_token() public {
+        uint256 a =
+            source.recordERC20(address(wrbtc), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, address(wrbtc), false);
+        uint256 b =
+            source.recordERC20(address(token), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, address(wrbtc), false);
+        assertEq(queue.getRequest(a).receiver, address(wrbtc));
+        assertEq(queue.getRequest(b).receiver, address(wrbtc));
+    }
+
+    function test_recordReceivedERC20_refuses_the_queue_as_receiver() public {
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidReceiver.selector, address(queue)));
+        source.recordReceivedERC20(address(token), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, address(queue));
+    }
+
+    function test_recordReceivedERC20_accepts_wrbtc_as_receiver() public {
+        uint256 id = source.recordReceivedERC20(
+            address(wrbtc), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, address(wrbtc)
+        );
+        assertEq(queue.getRequest(id).receiver, address(wrbtc));
+    }
+
+    function test_recordNative_refuses_the_queue_as_receiver() public {
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidReceiver.selector, address(queue)));
+        source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(queue));
+    }
+
+    function test_recordNative_refuses_wrbtc_as_receiver() public {
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidReceiver.selector, address(wrbtc)));
+        source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(wrbtc));
+    }
+
+    function test_recordReceivedNative_refuses_the_queue_as_receiver() public {
+        pusher.push(payable(address(queue)), 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidReceiver.selector, address(queue)));
+        source.recordReceivedNative(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(queue));
+    }
+
+    function test_recordReceivedNative_refuses_wrbtc_as_receiver() public {
+        pusher.push(payable(address(queue)), 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidReceiver.selector, address(wrbtc)));
+        source.recordReceivedNative(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(wrbtc));
+    }
+
     // ── ingress: measured-delta ERC20 ──
 
     function test_recordReceivedERC20_happy() public {
