@@ -114,7 +114,7 @@ interface IExitDelayQueue {
 
     error UnregisteredSource(address caller); //  onlyAllowedSource — DISTINCT record-path halt selector
     error ActorBlocked(address actor, BlockState state); // execution-gate revert (event: AccountBlocked)
-    error NotExecutor(address caller); //         msg.sender ∉ {originator, owner}
+    error NotExecutor(address caller); //         msg.sender ∉ {originator, owner} and the owner is not a contract
     error NotUnlocked(uint256 id, uint64 unlockAt);
     error QueuePaused();
     error AlreadyTerminal(uint256 id); //         status != Queued at a transition (also duplicate-batch-id)

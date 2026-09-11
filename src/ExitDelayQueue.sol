@@ -459,20 +459,28 @@ contract ExitDelayQueue is
     }
 
     /// @dev Shared execution core — always pays the immutable `receiver`.
-    ///      Block gate covers `{originator, owner, receiver}`. CEI: terminal
-    ///      status + escrow decrement + set removal ALL before the external transfer
-    ///      (`nonReentrant`).
+    ///      Who may deliver: the originator or the owner; and, when the owner
+    ///      is a contract, anyone — a contract owner cannot press the button
+    ///      itself, and delivery goes only to the receiver fixed at escrow
+    ///      time, so widening the executor set adds no destination. Block gate
+    ///      covers the executor and `{originator, owner, receiver}`. CEI:
+    ///      terminal status + escrow decrement + set removal ALL before the
+    ///      external transfer (`nonReentrant`).
     function _executeOne(uint256 requestId) internal {
         if (securityPerimeterPaused) revert QueuePaused();
         ExitRequest storage r = _requests[requestId];
         if (r.status == ExitStatus.None) revert UnknownRequest(requestId);
         if (r.status != ExitStatus.Queued) revert AlreadyTerminal(requestId);
         if (block.timestamp < r.unlockAt) revert NotUnlocked(requestId, r.unlockAt);
-        if (msg.sender != r.originator && msg.sender != r.owner) revert NotExecutor(msg.sender);
+        bool party = msg.sender == r.originator || msg.sender == r.owner;
+        if (!party && r.owner.code.length == 0) revert NotExecutor(msg.sender);
 
         _requireNotBlocked(r.originator);
         _requireNotBlocked(r.owner);
         _requireNotBlocked(r.receiver);
+        // The executor last: for a party this repeats a check above; for
+        // anyone else it is the only one that names them.
+        if (!party) _requireNotBlocked(msg.sender);
 
         address token = r.token;
         uint128 amount = r.amount;

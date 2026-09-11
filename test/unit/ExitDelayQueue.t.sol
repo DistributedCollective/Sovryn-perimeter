@@ -2680,4 +2680,79 @@ contract ExitDelayQueueTest is Test {
         queue.setTopUpFeasible(SURFACE_ZERO, true);
         assertTrue(queue.topUpFeasible(SURFACE_ZERO));
     }
+
+    // ─── Who may deliver: parties always; anyone when the owner is a contract ──
+
+    /// @notice A wallet-owned request is delivered only by its originator or owner.
+    function test_execute_outsider_reverts_when_owner_is_a_wallet() public {
+        uint256 id = _queueErc20With(10 ether, ORIG, OWNR, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(OUTSIDER);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, OUTSIDER));
+        queue.executeExit(id);
+        // The receiver is not an executor either.
+        vm.prank(RCVR);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, RCVR));
+        queue.executeExit(id);
+    }
+
+    /// @notice A contract-owned request cannot be delivered by its owner, so anyone
+    ///         may deliver it — and it still pays only the receiver fixed at escrow.
+    function test_execute_anyone_when_owner_is_a_contract() public {
+        address contractOwner = address(token); // any address with code
+        uint256 id = _queueErc20With(10 ether, contractOwner, contractOwner, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        uint256 before = token.balanceOf(RCVR);
+        vm.prank(OUTSIDER);
+        queue.executeExit(id);
+        assertEq(token.balanceOf(RCVR) - before, 10 ether, "receiver paid in full");
+        assertEq(uint8(queue.getRequest(id).status), uint8(IExitDelayQueue.ExitStatus.Executed));
+    }
+
+    /// @notice The batch form follows the same rule.
+    function test_executeExits_anyone_when_owner_is_a_contract() public {
+        address contractOwner = address(token);
+        uint256 id = _queueErc20With(7 ether, contractOwner, contractOwner, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        uint256 before = token.balanceOf(RCVR);
+        vm.prank(OUTSIDER);
+        queue.executeExits(ids);
+        assertEq(token.balanceOf(RCVR) - before, 7 ether);
+    }
+
+    /// @notice Whoever delivers must not be blocked, even on a contract-owned request.
+    function test_execute_blocked_executor_reverts_when_owner_is_a_contract() public {
+        address contractOwner = address(token);
+        uint256 id = _queueErc20With(10 ether, contractOwner, contractOwner, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ADMIN);
+        queue.freeze(OUTSIDER);
+        vm.prank(OUTSIDER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, OUTSIDER, IExitDelayQueue.BlockState.Frozen
+            )
+        );
+        queue.executeExit(id);
+        // The request is untouched and still deliverable by someone who is not blocked.
+        assertEq(uint8(queue.getRequest(id).status), uint8(IExitDelayQueue.ExitStatus.Queued));
+        vm.prank(ALT);
+        queue.executeExit(id);
+    }
+
+    /// @notice A blocked party still refuses delivery whoever presses the button.
+    function test_execute_anyone_still_refused_when_receiver_is_blocked() public {
+        address contractOwner = address(token);
+        uint256 id = _queueErc20With(10 ether, contractOwner, contractOwner, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ADMIN);
+        queue.freeze(RCVR);
+        vm.prank(OUTSIDER);
+        vm.expectRevert(
+            abi.encodeWithSelector(IExitDelayQueue.ActorBlocked.selector, RCVR, IExitDelayQueue.BlockState.Frozen)
+        );
+        queue.executeExit(id);
+    }
 }
