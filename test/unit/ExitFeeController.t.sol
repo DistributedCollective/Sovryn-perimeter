@@ -863,8 +863,7 @@ contract ExitFeeControllerTest is Test {
     // ════════════════════════════════════════════════════════════════════
 
     address constant GUARDIAN = address(0x6DA12D); // delay Admin guardian (≠ owner)
-    address constant WRAPPER = address(0x323A99); // a registered passthrough
-    address constant USER_EOA = address(0xE0A); // the human behind a wrapper burn
+    address constant USER_EOA = address(0xE0A); // a plain wallet receiver
 
     // Re-declared so vm.expectEmit can match delay-extension events by topic.
     event SecurityPerimeterEnabledSet(bool enabled);
@@ -873,7 +872,6 @@ contract ExitFeeControllerTest is Test {
     event SurfaceBypassSet(bytes32 indexed surfaceId, bool active, bool bypass);
     event SurfaceBypassRemoved(bytes32 indexed surfaceId);
     event ActorBypassSet(bytes32 indexed surfaceId, address indexed actor, bool active, bool bypass);
-    event PassthroughActorSet(bytes32 indexed surfaceId, address indexed actor, bool isPassthrough);
 
     uint32 constant DELAY = 6 hours;
 
@@ -985,7 +983,7 @@ contract ExitFeeControllerTest is Test {
 
     function test_globalDelay_returned_faithfully() public {
         // The controller returns EXACTLY globalDelaySeconds; the >= floor is a
-        // queue-side per-request check. Verify faithful passthrough across
+        // queue-side per-request check. Verify the value passes through across
         // a couple of values incl. the max uint32.
         _enableDelay(1);
         (uint32 d1,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
@@ -1099,89 +1097,11 @@ contract ExitFeeControllerTest is Test {
         assertEq(controller.quoteExitDelay(SURFACE_OTHER, address(0), ACTOR), DELAY);
     }
 
-    // ─── Passthrough surface-scoping ──────────────────────────────
 
-    function test_passthrough_resolves_to_receiver_on_scoped_surface() public {
-        _enableDelay(DELAY);
-        vm.prank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
 
-        // effectiveActor rewrites the wrapper to the receiver on THIS surface.
-        assertEq(controller.effectiveActor(SURFACE, WRAPPER, USER_EOA), USER_EOA);
-        // A non-passthrough is identity.
-        assertEq(controller.effectiveActor(SURFACE, ACTOR, USER_EOA), ACTOR);
 
-        // quoteExitDelayFor returns the NORMALIZED originator/owner.
-        (uint32 d, address effOrig, address effOwner) =
-            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE, IXUSD);
-        assertEq(d, DELAY);
-        assertEq(effOrig, USER_EOA, "originator normalized wrapper->receiver");
-        assertEq(effOwner, USER_EOA, "owner normalized wrapper->receiver");
-    }
 
-    function test_passthrough_is_surface_scoped_not_global() public {
-        _enableDelay(DELAY);
-        // Register WRAPPER as passthrough ONLY on the lending surface.
-        vm.prank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
 
-        // On Zero (no passthrough entry) the wrapper is NOT rewritten — margin/
-        // Zero keep raw identities (never collapse originator/owner globally).
-        assertEq(controller.effectiveActor(SURFACE_OTHER, WRAPPER, USER_EOA), WRAPPER);
-        (, address effOrig, address effOwner) =
-            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE_OTHER, address(0));
-        assertEq(effOrig, WRAPPER, "Zero keeps raw originator");
-        assertEq(effOwner, WRAPPER, "Zero keeps raw owner");
-    }
-
-    function test_passthrough_actor_bypass_targets_effective_actor() public {
-        // Finding 2: the quote is on effOrig, so an actorBypass on the USER_EOA
-        // (not the wrapper) applies. Register wrapper passthrough + bypass on EOA.
-        _enableDelay(DELAY);
-        vm.startPrank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
-        controller.setActorBypass(SURFACE, USER_EOA, _bp(true, true)); // exempt the human
-        vm.stopPrank();
-
-        (uint32 d, address effOrig,) =
-            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE, IXUSD);
-        assertEq(effOrig, USER_EOA);
-        assertEq(d, 0, "actorBypass on the effective (EOA) actor applies, not the wrapper");
-    }
-
-    function test_disabled_perimeter_skips_passthrough_resolution() public {
-        // Kill switch OFF: even with a passthrough registered, quoteExitDelayFor
-        // returns RAW identities (short-circuits BEFORE the registry).
-        vm.prank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
-        // perimeter still disabled
-        (uint32 d, address effOrig, address effOwner) =
-            controller.quoteExitDelayFor(WRAPPER, WRAPPER, USER_EOA, SURFACE, IXUSD);
-        assertEq(d, 0);
-        assertEq(effOrig, WRAPPER, "raw, registry not consulted");
-        assertEq(effOwner, WRAPPER, "raw, registry not consulted");
-    }
-
-    function test_passthrough_deregister() public {
-        _enableDelay(DELAY);
-        vm.startPrank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
-        assertTrue(controller.passthroughActor(SURFACE, WRAPPER));
-        controller.setPassthroughActor(SURFACE, WRAPPER, false);
-        vm.stopPrank();
-        assertFalse(controller.passthroughActor(SURFACE, WRAPPER));
-        assertEq(controller.effectiveActor(SURFACE, WRAPPER, USER_EOA), WRAPPER);
-    }
-
-    function test_setPassthrough_zero_reverts_and_only_owner() public {
-        vm.prank(ADMIN);
-        vm.expectRevert(ExitFeeController.ActorZero.selector);
-        controller.setPassthroughActor(SURFACE, address(0), true);
-
-        vm.prank(OTHER);
-        vm.expectRevert("Ownable: caller is not the owner");
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
-    }
 
     // ─── Admin guardian setter (setAdmin) ───────────────────────────────
 
@@ -1350,18 +1270,9 @@ contract ExitFeeControllerTest is Test {
     /// @dev Property: disabled perimeter ALWAYS returns (0, raw, owner) — the
     ///      registry is never consulted and identities are never normalized,
     ///      for any inputs (controller-side).
-    function testFuzz_disabled_always_raw_and_zero(
-        address raw,
-        address owner_,
-        address receiver,
-        address sub,
-        bool registerPassthrough
-    ) public {
-        // Optionally register a passthrough; it must NOT be consulted while off.
-        if (registerPassthrough && raw != address(0)) {
-            vm.prank(ADMIN);
-            controller.setPassthroughActor(SURFACE, raw, true);
-        }
+    function testFuzz_disabled_always_raw_and_zero(address raw, address owner_, address receiver, address sub)
+        public
+    {
         // perimeter disabled (default)
         (uint32 d, address effOrig, address effOwner) =
             controller.quoteExitDelayFor(raw, owner_, receiver, SURFACE, sub);
@@ -1371,10 +1282,9 @@ contract ExitFeeControllerTest is Test {
     }
 
     /// @dev Property: quoteExitDelayFor and the inner quoteExitDelay agree on the
-    ///      resolved delay when the perimeter is ON and no passthrough rewrites
+    ///      resolved delay when the perimeter is ON
     ///      the actor (so effOrig == rawOriginator).
     function testFuzz_outer_inner_agree(uint32 d, address actor, address sub) public {
-        vm.assume(actor != WRAPPER); // no passthrough registered anyway
         d = uint32(bound(d, 1, type(uint32).max));
         _enableDelay(d);
         (uint32 outer,,) = controller.quoteExitDelayFor(actor, actor, actor, SURFACE, sub);
@@ -1430,7 +1340,7 @@ contract ExitFeeControllerTest is Test {
         assertEq(c.admin(), address(0), "admin unset until setAdmin");
     }
 
-    // ─── surface-bypass + passthrough registries are ENUMERABLE ──
+    // ─── surface-bypass registry is ENUMERABLE ──
 
     function test_surfaceBypassKeys_enumerates_no_argument() public {
         // The getter takes NO argument — surface bypasses are keyed by surfaceId
@@ -1516,83 +1426,10 @@ contract ExitFeeControllerTest is Test {
         assertEq(controller.actorBypassKeys(arbitrary)[0], ACTOR);
     }
 
-    function test_passthroughKeys_enumerates_and_drops_on_deregister() public {
-        vm.startPrank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
-        controller.setPassthroughActor(SURFACE, CAFE, true);
-        vm.stopPrank();
 
-        address[] memory keys = controller.passthroughKeys(SURFACE);
-        assertEq(keys.length, 2, "both passthroughs enumerated");
-        assertEq(keys[0], WRAPPER);
-        assertEq(keys[1], CAFE);
 
-        // Deregister WRAPPER: exact-to-live (dropped from the index, unlike the
-        // soft-retained bypass key-sets).
-        vm.prank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, false);
-        address[] memory keys2 = controller.passthroughKeys(SURFACE);
-        assertEq(keys2.length, 1, "deregistered passthrough dropped from index");
-        assertEq(keys2[0], CAFE);
-    }
 
-    function test_passthroughKeys_under_arbitrary_surfaceId() public {
-        // A passthrough registered under an arbitrary surfaceId is enumerated.
-        bytes32 arbitrary = keccak256("ARBITRARY:PASSTHROUGH:QQQ");
-        vm.prank(ADMIN);
-        controller.setPassthroughActor(arbitrary, WRAPPER, true);
-        address[] memory keys = controller.passthroughKeys(arbitrary);
-        assertEq(keys.length, 1);
-        assertEq(keys[0], WRAPPER);
-        // Surface-scoped: NOT visible under a different surface.
-        assertEq(controller.passthroughKeys(SURFACE).length, 0);
-    }
 
-    function test_passthroughKeys_idempotent_reregister() public {
-        vm.startPrank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true);
-        controller.setPassthroughActor(SURFACE, WRAPPER, true); // re-register
-        vm.stopPrank();
-        assertEq(controller.passthroughKeys(SURFACE).length, 1, "no duplicate on re-register");
-    }
-
-    function test_passthroughKeys_deregister_absent_is_noop() public {
-        // Deregistering an address that was never registered leaves the index
-        // empty and does not revert.
-        vm.prank(ADMIN);
-        controller.setPassthroughActor(SURFACE, WRAPPER, false);
-        assertEq(controller.passthroughKeys(SURFACE).length, 0);
-        assertFalse(controller.passthroughActor(SURFACE, WRAPPER));
-    }
-
-    /// @dev Property: every actively-registered passthrough is
-    ///      enumerated, and enumeration membership tracks the boolean flag exactly
-    ///      (register -> present, deregister -> absent) under a random walk.
-    function testFuzz_passthroughKeys_membership_tracks_flag(address a, bool register, bool thenDeregister)
-        public
-    {
-        vm.assume(a != address(0));
-        bytes32 s = SURFACE;
-        vm.startPrank(ADMIN);
-        if (register) {
-            controller.setPassthroughActor(s, a, true);
-            if (thenDeregister) controller.setPassthroughActor(s, a, false);
-        }
-        vm.stopPrank();
-
-        bool expectPresent = register && !thenDeregister;
-        assertEq(controller.passthroughActor(s, a), expectPresent, "flag matches expectation");
-
-        address[] memory keys = controller.passthroughKeys(s);
-        bool found = false;
-        for (uint256 i = 0; i < keys.length; i++) {
-            if (keys[i] == a) {
-                found = true;
-                break;
-            }
-        }
-        assertEq(found, expectPresent, "index membership tracks the boolean flag exactly");
-    }
 
     /// @dev Property: the surface-bypass key-set contains a
     ///      surfaceId iff a surface bypass was set-and-not-hard-removed for it.
@@ -1621,8 +1458,8 @@ contract ExitFeeControllerTest is Test {
     //
     //  The exact gap the previous cycle left: the master surface-id set was
     //  populated ONLY by setSurfaceBypass, so a sub-product- or actor-ONLY
-    //  bypass (the most common exemption shape, actor tier) or a
-    //  passthrough-only entry under an arbitrary surfaceId was undiscoverable
+    //  bypass (the most common exemption shape, actor tier) under an
+    //  arbitrary surfaceId was undiscoverable
     //  by any single enumeration getter. These tests pin that NO zero-delay /
     //  identity-collapse config is invisible to the inspector's driver.
     // ════════════════════════════════════════════════════════════════════
@@ -1703,44 +1540,7 @@ contract ExitFeeControllerTest is Test {
         assertEq(controller.actorBypassKeys(s)[0], ACTOR, "actor tier still live");
     }
 
-    /// @dev REGRESSION: a passthrough-ONLY entry under an arbitrary surfaceId
-    ///      (no bypass at any tier, not a named fee surface) is discoverable via
-    ///      passthroughSurfaceIds().
-    function test_passthroughSurfaceIds_records_passthrough_only_entry() public {
-        bytes32 arbitrary = keccak256("ARBITRARY:PASSTHROUGH:ONLY");
-        vm.prank(ADMIN);
-        controller.setPassthroughActor(arbitrary, WRAPPER, true);
 
-        // No bypass at any tier for this surfaceId:
-        assertEq(controller.bypassSurfaceIds().length, 0, "no bypass touched this id");
-        assertEq(controller.surfaceBypassKeys().length, 0);
-
-        // But the passthrough master set discovers it:
-        bytes32[] memory ids = controller.passthroughSurfaceIds();
-        assertEq(ids.length, 1, "passthrough-only surface discoverable");
-        assertEq(ids[0], arbitrary);
-        assertEq(controller.passthroughKeys(arbitrary)[0], WRAPPER);
-    }
-
-    /// @dev passthroughSurfaceIds() is surface-level retention: the id stays
-    ///      recorded even after every passthrough under it is deregistered (the
-    ///      per-surface passthroughKeys going empty is the live signal). This
-    ///      guarantees the inspector never loses the probe point.
-    function test_passthroughSurfaceIds_retained_after_deregister() public {
-        bytes32 s = keccak256("ARBITRARY:PASSTHROUGH:DEREG");
-        vm.startPrank(ADMIN);
-        controller.setPassthroughActor(s, WRAPPER, true);
-        controller.setPassthroughActor(s, WRAPPER, false); // deregister the only one
-        vm.stopPrank();
-
-        // Per-surface live set is now empty...
-        assertEq(controller.passthroughKeys(s).length, 0, "no live passthrough under s");
-        assertFalse(controller.passthroughActor(s, WRAPPER));
-        // ...but the surface-level master set retains the probe point.
-        bytes32[] memory ids = controller.passthroughSurfaceIds();
-        assertEq(ids.length, 1, "surface-level id retained for probing");
-        assertEq(ids[0], s);
-    }
 
     /// @dev Property: bypassSurfaceIds() contains a surfaceId iff at least one
     ///      bypass tier (surface / sub-product / actor) was EVER written for it —
@@ -1771,34 +1571,6 @@ contract ExitFeeControllerTest is Test {
         assertTrue(found, "any tier write records the surfaceId in the master set");
     }
 
-    /// @dev Property: passthroughSurfaceIds() contains a surfaceId iff a
-    ///      passthrough was EVER registered under it (register-only recording,
-    ///      surface-level retention).
-    function testFuzz_passthroughSurfaceIds_membership(
-        bytes32 s,
-        address a,
-        bool register,
-        bool thenDeregister
-    ) public {
-        vm.assume(a != address(0));
-        vm.startPrank(ADMIN);
-        if (register) {
-            controller.setPassthroughActor(s, a, true);
-            if (thenDeregister) controller.setPassthroughActor(s, a, false);
-        }
-        vm.stopPrank();
-
-        bytes32[] memory ids = controller.passthroughSurfaceIds();
-        bool found = false;
-        for (uint256 i = 0; i < ids.length; i++) {
-            if (ids[i] == s) {
-                found = true;
-                break;
-            }
-        }
-        // Ever-registered (even if later deregistered) -> present; never -> absent.
-        assertEq(found, register, "master set records on register, retains on deregister");
-    }
 
     // ─── Invariant testing design (NOT IMPLEMENTED -- sketch for follow-up) ──
     //

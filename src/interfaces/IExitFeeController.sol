@@ -98,7 +98,6 @@ interface IExitFeeController {
     event ActorBypassSet(bytes32 indexed surfaceId, address indexed actor, bool active, bool bypass);
     event SubProductBypassRemoved(bytes32 indexed surfaceId, address indexed subProduct);
     event ActorBypassRemoved(bytes32 indexed surfaceId, address indexed actor);
-    event PassthroughActorSet(bytes32 indexed surfaceId, address indexed actor, bool isPassthrough);
 
     // ─── Quote ────────────────────────────────────────────────────────────
 
@@ -116,22 +115,20 @@ interface IExitFeeController {
 
     /// @notice The delay hook's SINGLE hot-path entry. Short-circuits
     ///         the kill switch FIRST: when `securityPerimeterEnabled == false` it
-    ///         returns `(0, rawOriginator, owner)` WITHOUT consulting the
-    ///         passthrough registry or the escrow queue (the liveness escape).
-    ///         Otherwise it resolves the surface-scoped effective actors
-    ///         (`effOrig`/`effOwner`) — a registered passthrough for `surfaceId`
-    ///         resolves to `receiver` — quotes the delay on `effOrig`, and
-    ///         returns all three so the quote and the record share ONE identity
-    ///        . The hook MUST ignore `effOrig`/`effOwner` and pay
-    ///         direct whenever `d == 0`.
-    /// @param  rawOriginator The withdrawal caller (pre-normalization).
+    ///         returns `(0, rawOriginator, owner)` WITHOUT consulting the bypass
+    ///         tiers or the escrow queue (the liveness escape). Otherwise it
+    ///         quotes the delay on the originator and returns the originator and
+    ///         owner unchanged, so the quote and the record share ONE identity.
+    ///         The hook MUST ignore `effOrig`/`effOwner` and pay direct whenever
+    ///         `d == 0`.
+    /// @param  rawOriginator The withdrawal caller.
     /// @param  owner         The position owner (iToken holder / borrower / trove).
-    /// @param  receiver      The immutable payout destination.
+    /// @param  receiver      The immutable payout destination (not consulted).
     /// @param  surfaceId     Operation-kind identifier (see fee tiers).
     /// @param  subProduct    Per-instance address (iToken / converter / 0).
     /// @return d       Delay seconds to escrow for (0 ⇒ off / inactive / bypassed).
-    /// @return effOrig Effective originator (raw or passthrough→receiver).
-    /// @return effOwner Effective owner (raw or passthrough→receiver).
+    /// @return effOrig The originator, unchanged.
+    /// @return effOwner The owner, unchanged.
     function quoteExitDelayFor(
         address rawOriginator,
         address owner,
@@ -147,19 +144,12 @@ interface IExitFeeController {
     ///         this is for off-chain quoting and the inner resolver.
     /// @param  surfaceId       Operation-kind identifier.
     /// @param  subProduct      Per-instance address (iToken / converter / 0).
-    /// @param  effectiveActor  The already-normalized actor (never a raw wrapper).
+    /// @param  effectiveActor  The actor to resolve for.
     /// @return The delay seconds resolved by the 3-tier bypass resolver.
     function quoteExitDelay(bytes32 surfaceId, address subProduct, address effectiveActor)
         external
         view
         returns (uint32);
-
-    /// @notice Resolve a surface-scoped passthrough: a passthrough registered
-    ///         for `surfaceId` resolves `raw` to `receiver`, else identity.
-    function effectiveActor(bytes32 surfaceId, address raw, address receiver)
-        external
-        view
-        returns (address);
 
     // ─── State views ──────────────────────────────────────────────────────
 
@@ -207,22 +197,6 @@ interface IExitFeeController {
     ///         uses so NO zero-delay config under an arbitrary surfaceId is
     ///         invisible. Retention-only (entries never dropped).
     function bypassSurfaceIds() external view returns (bytes32[] memory);
-
-    /// @notice ANY-TIER-TOUCHED master set for the passthrough registry:
-    ///         every surfaceId under which a passthrough has been
-    ///         registered. Lets `InspectController` discover a passthrough-only
-    ///         surface (no bypass entry, not a named fee surface). Surface-level
-    ///         retention (the id stays after every passthrough under it is dropped).
-    function passthroughSurfaceIds() external view returns (bytes32[] memory);
-
-    /// @notice Every passthrough address ever registered under `surfaceId`.
-    ///         Backed by an `EnumerableSet.AddressSet` so the
-    ///         surface-scoped passthrough registry — as security-critical as the
-    ///         bypass tiers — has no events-only blind spot. Entries are dropped
-    ///         from the index when deregistered (`setPassthroughActor(.., false)`).
-    function passthroughKeys(bytes32 surfaceId) external view returns (address[] memory);
-
-    function passthroughActor(bytes32 surfaceId, address a) external view returns (bool);
 
     // ─── Admin ────────────────────────────────────────────────────────────
 
@@ -298,8 +272,4 @@ interface IExitFeeController {
 
     function removeActorBypasses(bytes32 surfaceId, address[] calldata actors) external;
 
-    /// @notice Register/deregister a surface-scoped passthrough actor. A
-    ///         passthrough registered for `surfaceId` normalizes to `receiver`
-    ///         in `effectiveActor` / `quoteExitDelayFor`. Owner-only.
-    function setPassthroughActor(bytes32 surfaceId, address a, bool isPassthrough) external;
 }

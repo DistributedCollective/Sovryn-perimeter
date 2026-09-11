@@ -12,7 +12,7 @@
 #     setters + views + events) — consumed under 0.5.17 (Sovryn-smart),
 #     0.6.11 (zero), 0.8.20 (this repo) AND 0.4.26 (AMM); and
 #   * the DELAY extension (securityPerimeterEnabled / globalDelaySeconds /
-#     admin / bypass tiers / passthrough registry / quoteExitDelay*),
+#     admin / bypass tiers / quoteExitDelay*),
 #     added by the Security-Perimeter delay feature.
 # The AMM (0.4.26) is DEFERRED and "swaps are never delayed" (spec), so it
 # never consumes the delay extension. The `v0_4/` outlier is therefore

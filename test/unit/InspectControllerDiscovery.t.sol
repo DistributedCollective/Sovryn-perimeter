@@ -11,7 +11,7 @@ import {InspectController} from "../../script/InspectController.s.sol";
 /// @dev Test harness exposing InspectController's internal discovery driver so
 ///      the dump-path can be exercised without deployment artifacts / RPC. The
 ///      inspector prints from `_probeSurfaceIds` (the any-tier-touched union),
-///      so proving that union CONTAINS an actor-only / passthrough-only id is
+///      so proving that union CONTAINS an actor-only id is
 ///      exactly the "dump path discovers it" regression.
 contract InspectHarness is InspectController {
     function probeSurfaceIds(ExitFeeController c) external view returns (bytes32[] memory) {
@@ -24,12 +24,10 @@ contract InspectControllerDiscoveryTest is Test {
     address constant OWNER = address(0xC0FFEE);
     address constant ACTOR = address(0xAC);
     address constant SUB = address(0x1750D);
-    address constant WRAP = address(0x323A99);
 
     // A named fee surface, and two ARBITRARY surfaces never registered as fee surfaces.
     bytes32 constant NAMED = keccak256("PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW");
     bytes32 constant ARB_ACTOR = keccak256("ARBITRARY:ACTOR:ONLY");
-    bytes32 constant ARB_PASS = keccak256("ARBITRARY:PASSTHROUGH:ONLY");
 
     ExitFeeController controller;
     InspectHarness harness;
@@ -72,14 +70,6 @@ contract InspectControllerDiscoveryTest is Test {
         assertTrue(_contains(ids, ARB_ACTOR), "sub-product-only arbitrary surface discovered");
     }
 
-    /// @dev A passthrough-ONLY entry under an arbitrary surfaceId (no bypass at any
-    ///      tier, not named) is discovered via passthroughSurfaceIds().
-    function test_probe_discovers_passthrough_only_entry() public {
-        vm.prank(OWNER);
-        controller.setPassthroughActor(ARB_PASS, WRAP, true);
-        bytes32[] memory ids = harness.probeSurfaceIds(controller);
-        assertTrue(_contains(ids, ARB_PASS), "passthrough-only arbitrary surface discovered");
-    }
 
     /// @dev removeSurfaceBypass while an actor entry stays live keeps the id in
     ///      the probe set (retention-only master set).
@@ -102,13 +92,12 @@ contract InspectControllerDiscoveryTest is Test {
     }
 
     /// @dev The probe set is deduplicated: a surfaceId that is named AND carries
-    ///      bypass + passthrough entries appears exactly once.
+    ///      bypass entries appears exactly once.
     function test_probe_dedups_named_and_touched_surface() public {
         vm.startPrank(OWNER);
         controller.setActorBypass(
             NAMED, ACTOR, IExitFeeController.DelayBypassPolicy({active: true, bypass: true})
         );
-        controller.setPassthroughActor(NAMED, WRAP, true);
         vm.stopPrank();
 
         bytes32[] memory ids = harness.probeSurfaceIds(controller);

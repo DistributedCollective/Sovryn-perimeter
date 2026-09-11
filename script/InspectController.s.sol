@@ -92,12 +92,11 @@ contract InspectController is Script {
             _printSurface(c, surfaceNames[i]);
         }
 
-        // ── dump EVERY delay-bypass + passthrough entry via the
-        //    on-chain enumeration getters — NOT the hardcoded surface list above.
-        //    A bypass / passthrough under an arbitrary surfaceId (never registered
-        //    as a named fee surface) is still fully surfaced here.
+        // ── dump EVERY delay-bypass entry via the on-chain enumeration
+        //    getters — NOT the hardcoded surface list above. A bypass under an
+        //    arbitrary surfaceId (never registered as a named fee surface) is
+        //    still fully surfaced here.
         _printDelayBypassRegistry(c);
-        _printPassthroughRegistry(c);
     }
 
     /// @dev single-guardian assertion. Reads the queue proxy from its
@@ -125,23 +124,20 @@ contract InspectController is Script {
         }
     }
 
-    /// @dev the complete surfaceId probe set that drives BOTH the
-    ///      bypass and passthrough dumps —
-    ///        `bypassSurfaceIds()` ∪ `passthroughSurfaceIds()` ∪ the named surfaces.
-    ///      The `bypassSurfaceIds()` / `passthroughSurfaceIds()` master sets are
-    ///      ANY-TIER-TOUCHED: a surface carrying ONLY a sub-product- or actor-tier
-    ///      bypass (or ONLY a passthrough entry) is present here even though it was
-    ///      never passed to `setSurfaceBypass`. The named fee surfaces are folded in
-    ///      so the human-readable rows always render, and duplicates are collapsed.
-    ///      Root cause of the old gap (`surfaceBypassKeys()`-only driver): the master
-    ///      id-set was populated solely by `setSurfaceBypass`, so an actor-only bypass
-    ///      or a passthrough-only entry under an arbitrary surfaceId was undiscoverable.
+    /// @dev the complete surfaceId probe set that drives the bypass dump —
+    ///        `bypassSurfaceIds()` ∪ the named surfaces.
+    ///      The `bypassSurfaceIds()` master set is ANY-TIER-TOUCHED: a surface
+    ///      carrying ONLY a sub-product- or actor-tier bypass is present here even
+    ///      though it was never passed to `setSurfaceBypass`. The named fee surfaces
+    ///      are folded in so the human-readable rows always render, and duplicates
+    ///      are collapsed. Root cause of the old gap (`surfaceBypassKeys()`-only
+    ///      driver): the master id-set was populated solely by `setSurfaceBypass`,
+    ///      so an actor-only bypass under an arbitrary surfaceId was undiscoverable.
     function _probeSurfaceIds(ExitFeeController c) internal view returns (bytes32[] memory) {
         bytes32[] memory bypassIds = c.bypassSurfaceIds();
-        bytes32[] memory passIds = c.passthroughSurfaceIds();
 
         // Upper bound on the union size; trim to the deduped count below.
-        bytes32[] memory acc = new bytes32[](bypassIds.length + passIds.length + surfaceNames.length);
+        bytes32[] memory acc = new bytes32[](bypassIds.length + surfaceNames.length);
         uint256 n = 0;
 
         // Named fee surfaces first (stable ordering; keeps human rows at the top).
@@ -150,9 +146,6 @@ contract InspectController is Script {
         }
         for (uint256 i = 0; i < bypassIds.length; i++) {
             n = _pushUnique(acc, n, bypassIds[i]);
-        }
-        for (uint256 i = 0; i < passIds.length; i++) {
-            n = _pushUnique(acc, n, passIds[i]);
         }
 
         bytes32[] memory out = new bytes32[](n);
@@ -195,7 +188,7 @@ contract InspectController is Script {
 
     /// @dev dump every surface / sub-product / actor delay-bypass
     ///      entry, driven by the ANY-TIER-TOUCHED probe set (`bypassSurfaceIds()` ∪
-    ///      `passthroughSurfaceIds()` ∪ named surfaces) so a sub-product- or
+    ///      named surfaces) so a sub-product- or
     ///      actor-only bypass under an arbitrary surfaceId is never missed. A probed
     ///      surfaceId with no live bypass entry at any tier prints nothing.
     function _printDelayBypassRegistry(ExitFeeController c) internal view {
@@ -214,7 +207,7 @@ contract InspectController is Script {
             bool surfaceEntryPresent = _surfaceBypassKeyPresent(c, id);
 
             // Skip a probed id that carries no bypass entry at any tier (e.g. a
-            // named fee surface or a passthrough-only surface never given one).
+            // named fee surface never given one).
             if (!surfaceEntryPresent && subBp.length == 0 && actorBp.length == 0) {
                 continue;
             }
@@ -236,37 +229,7 @@ contract InspectController is Script {
         console2.log("");
     }
 
-    /// @dev dump the surface-scoped passthrough registry via
-    ///      `passthroughKeys(surfaceId)`, driven by the SAME any-tier-touched probe
-    ///      set as the bypass dump (`bypassSurfaceIds()` ∪ `passthroughSurfaceIds()`
-    ///      ∪ named surfaces). A passthrough-only surface (no bypass entry, not a
-    ///      named fee surface) is discoverable via `passthroughSurfaceIds()`.
-    function _printPassthroughRegistry(ExitFeeController c) internal view {
-        console2.log(unicode"── Passthrough registry (enumerated) ─────────────────");
-        bytes32[] memory ids = _probeSurfaceIds(c);
-        bool anyPrinted = false;
-        for (uint256 i = 0; i < ids.length; i++) {
-            anyPrinted = _printPassthroughFor(c, ids[i], _labelFor(ids[i])) || anyPrinted;
-        }
-        if (!anyPrinted) {
-            console2.log("  (no passthrough actors configured)");
-        }
-        console2.log("");
-    }
 
-    function _printPassthroughFor(ExitFeeController c, bytes32 id, string memory label)
-        internal
-        view
-        returns (bool)
-    {
-        address[] memory pks = c.passthroughKeys(id);
-        if (pks.length == 0) return false;
-        console2.log(string.concat("  ", label, ":"));
-        for (uint256 j = 0; j < pks.length; j++) {
-            console2.log(string.concat("    ", vm.toString(pks[j])));
-        }
-        return true;
-    }
 
     function _printSurface(ExitFeeController c, string memory name) internal view {
         bytes32 id = keccak256(bytes(name));
@@ -294,15 +257,13 @@ contract InspectController is Script {
                 console2.log(string.concat("    ", vm.toString(actors[j]), "  ", _fmtPolicy(p)));
             }
         }
-        // NOTE: delay-bypass + passthrough tiers are dumped separately in
-        // `_printDelayBypassRegistry` / `_printPassthroughRegistry`, driven by the
-        // ANY-TIER-TOUCHED master sets `bypassSurfaceIds()` ∪ `passthroughSurfaceIds()`
-        // ∪ the named surfaces (NOT this hardcoded surface list, and NOT the
-        // surface-tier-only `surfaceBypassKeys()`). Because those
-        // master sets are recorded by EVERY bypass writer (surface / sub-product /
-        // actor) and by passthrough registration, an entry under an arbitrary
-        // surfaceId — including a sub-product- or actor-ONLY bypass or a
-        // passthrough-only entry — is discovered there.
+        // NOTE: delay-bypass tiers are dumped separately in
+        // `_printDelayBypassRegistry`, driven by the ANY-TIER-TOUCHED master set
+        // `bypassSurfaceIds()` ∪ the named surfaces (NOT this hardcoded surface
+        // list, and NOT the surface-tier-only `surfaceBypassKeys()`). Because that
+        // master set is recorded by EVERY bypass writer (surface / sub-product /
+        // actor), an entry under an arbitrary surfaceId — including a sub-product-
+        // or actor-ONLY bypass — is discovered there.
         console2.log("");
     }
 

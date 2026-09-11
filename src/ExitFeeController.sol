@@ -68,18 +68,14 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     //   262        _surfaceBypassKeys._indexes (mapping head)            ┘
     //   263        _subProductBypassKeys    mapping head (enumeration index)
     //   264        _actorBypassKeys         mapping head (enumeration index)
-    //   265        _passthroughActor        nested-mapping head (surface-scoped)
-    //   266        _passthroughKeys         mapping head (enumeration index)
-    //   267        _bypassSurfaceIds._values  (Bytes32Set array head)    ┐ 2 slots
-    //   268        _bypassSurfaceIds._indexes (mapping head)             ┘
-    //   269        _passthroughSurfaceIds._values  (Bytes32Set array head) ┐ 2 slots
-    //   270        _passthroughSurfaceIds._indexes (mapping head)          ┘
-    //   271        securityPerimeterEnabled (1 byte) + globalDelaySeconds
+    //   265        _bypassSurfaceIds._values  (Bytes32Set array head)    ┐ 2 slots
+    //   266        _bypassSurfaceIds._indexes (mapping head)             ┘
+    //   267        securityPerimeterEnabled (1 byte) + globalDelaySeconds
     //              (4 bytes) -- PACKED; 27 bytes of the slot are unused.
-    //   272 .. 300 __gap[29] -- preserves the OZ-style 50-slot namespace
-    //                           (50 - 21 own slots used).
+    //   268 .. 300 __gap[33] -- preserves the OZ-style 50-slot namespace
+    //                           (50 - 17 own slots used).
     //
-    // Own slots: 251 + 252..256 + 257 + 258..271 = 21, so __gap = 50 - 21 = 29
+    // Own slots: 251 + 252..256 + 257 + 258..267 = 17, so __gap = 50 - 17 = 33
     // and the namespace ends at slot 300.
     //
     // Upgrades that add storage to THIS contract MUST consume from __gap and
@@ -197,26 +193,6 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductBypassKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorBypassKeys;
 
-    /// @dev Surface-scoped passthrough-actor registry. A passthrough
-    ///      registered for `surfaceId` resolves to the `receiver` in
-    ///      `effectiveActor`; it NEVER collapses identities globally — the
-    ///      wrapper is registered only under `SURFACE_LENDING_LENDER_WITHDRAW`,
-    ///      so margin/Zero (no entry) keep `effOrig = raw`, `effOwner = owner`.
-    ///      Co-located here (not in the escrow queue) so the hook normalizes
-    ///      WITHOUT touching the queue, keeping the kill switch queue-independent
-    ///     .
-    mapping(bytes32 => mapping(address => bool)) internal _passthroughActor;
-
-    /// @dev Enumeration index for the surface-scoped passthrough registry.
-    ///      Outer key `surfaceId`, values = every passthrough
-    ///      address registered under it. Unlike the bypass key-sets this is kept
-    ///      exact-to-live: an address is added on register and DROPPED on
-    ///      deregister (`setPassthroughActor(.., false)`), because a passthrough is
-    ///      a boolean membership with no soft-retire state to preserve. Gives the
-    ///      passthrough registry the same enumerability as the bypass tiers (no
-    ///      events-only blind spot on a security-critical registry).
-    mapping(bytes32 => EnumerableSet.AddressSet) internal _passthroughKeys;
-
     /// @dev ANY-TIER-TOUCHED master surface-id set for delay bypasses.
     ///      Every bypass WRITER — `_writeSurfaceBypass` (via
     ///      `setSurfaceBypass`), `_writeSubProductBypass`, `_writeActorBypass` —
@@ -233,23 +209,12 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///      remove the id from discovery — the inspector still probes every tier.
     EnumerableSet.Bytes32Set internal _bypassSurfaceIds;
 
-    /// @dev ANY-TIER-TOUCHED master surface-id set for the passthrough registry.
-    ///      `setPassthroughActor(surfaceId, .., true)` records
-    ///      the `surfaceId` here, so a passthrough-only surface (no bypass entry,
-    ///      not a named fee surface) is still enumerable. Like the passthrough
-    ///      key-set it is retention-only at the SURFACE level: a surfaceId stays
-    ///      recorded even after every passthrough under it is deregistered (the
-    ///      per-surface `_passthroughKeys` set going empty is the live signal;
-    ///      keeping the surfaceId costs one slot and guarantees the inspector never
-    ///      loses the probe point). `passthroughSurfaceIds()` exposes it.
-    EnumerableSet.Bytes32Set internal _passthroughSurfaceIds;
-
     /// @notice Global kill switch for the DELAY perimeter. Independent of
     ///         `exitFeeEnabled`: turning fees off does NOT disable the
     ///         perimeter, and a fee-inactive surface can still be delay-active.
     ///         When false, `quoteExitDelayFor` short-circuits to
-    ///         `(0, raw, owner)` without consulting the bypass tiers, the
-    ///         passthrough registry, or the queue.
+    ///         `(0, raw, owner)` without consulting the bypass tiers or the
+    ///         queue.
     bool public securityPerimeterEnabled;
 
     /// @notice One delay for EVERY surface (uint32 gives ~136 years of head
@@ -262,7 +227,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     uint32 public globalDelaySeconds;
 
     // aderyn-ignore-next-line(unused-state-variable)
-    uint256[29] private __gap;
+    uint256[33] private __gap;
 
     // ─── Custom errors ──────────────────────────────────────────────────
 
@@ -765,47 +730,6 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         }
     }
 
-    // ─── Admin: surface-scoped passthrough registry ───────────────
-
-    /// @notice Register/deregister a surface-scoped passthrough actor.
-    ///         A passthrough registered for `surfaceId` normalizes to the
-    ///         `receiver` in `effectiveActor` / `quoteExitDelayFor`. Owner-only
-    ///         and — because `bypass=true` is equivalent to zero delay and a
-    ///         passthrough rewrites the block key — as security-critical as the
-    ///         source-registry. NEVER collapses identities globally: the
-    ///         wrapper is registered ONLY under `SURFACE_LENDING_LENDER_WITHDRAW`,
-    ///         so margin/Zero keep their raw identities.
-    /// @param  surfaceId     Operation-kind identifier.
-    /// @param  a             Passthrough contract (e.g. the RBTCWrapperProxy).
-    /// @param  isPassthrough True to register, false to deregister.
-    // aderyn-ignore-next-line(centralization-risk)
-    function setPassthroughActor(bytes32 surfaceId, address a, bool isPassthrough) external onlyOwner {
-        if (a == address(0)) revert ActorZero();
-        _passthroughActor[surfaceId][a] = isPassthrough;
-        // Keep the enumeration index exact-to-live: a passthrough is
-        // a boolean membership with no soft-retire state, so add on register and
-        // drop on deregister. add/remove return values are intentionally unchecked
-        // (idempotent — a repeat register or a deregister of an absent entry is a
-        // successful no-op that still emits, matching the setter's overwrite
-        // semantics).
-        if (isPassthrough) {
-            // aderyn-ignore-next-line(unchecked-return)
-            _passthroughKeys[surfaceId].add(a);
-            // ANY-TIER-TOUCHED master set: record the surfaceId on
-            // register so a passthrough-only surface (no bypass entry, not a named
-            // fee surface) is still a probe point for the inspector. Surface-level
-            // retention: the id stays even after every passthrough under it is
-            // deregistered — the per-surface `_passthroughKeys` set going empty is
-            // the live signal, and keeping the id guarantees the probe point.
-            // aderyn-ignore-next-line(unchecked-return)
-            _passthroughSurfaceIds.add(surfaceId);
-        } else {
-            // aderyn-ignore-next-line(unchecked-return)
-            _passthroughKeys[surfaceId].remove(a);
-        }
-        emit PassthroughActorSet(surfaceId, a, isPassthrough);
-    }
-
     // ─── Policy views ───────────────────────────────────────────────────
 
     /// @notice Surface tier (gate + default rate) for `surfaceId`. Returns
@@ -929,33 +853,6 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         return _bypassSurfaceIds.values();
     }
 
-    /// @notice ANY-TIER-TOUCHED master set for the passthrough registry: every
-    ///         surfaceId under which a passthrough has been registered.
-    ///         Drives `InspectController`'s passthrough dump so a
-    ///         passthrough-only surface (no bypass entry, not a named fee surface)
-    ///         is still enumerable. Surface-level retention: an id stays recorded
-    ///         even after every passthrough under it is deregistered.
-    /// @return Snapshot of every surfaceId touched by the passthrough registry.
-    function passthroughSurfaceIds() external view returns (bytes32[] memory) {
-        return _passthroughSurfaceIds.values();
-    }
-
-    /// @notice Every passthrough address registered under `surfaceId`.
-    ///         Exact-to-live: an address enters on `setPassthroughActor(.., true)`
-    ///         and is dropped on `setPassthroughActor(.., false)`. Gives the
-    ///         security-critical passthrough registry the same on-chain
-    ///         enumerability as the bypass tiers (no events-only blind spot).
-    /// @param  surfaceId See `setSurfacePolicy`.
-    /// @return Snapshot of every live passthrough address under `surfaceId`.
-    function passthroughKeys(bytes32 surfaceId) external view returns (address[] memory) {
-        return _passthroughKeys[surfaceId].values();
-    }
-
-    /// @notice Whether `a` is a surface-scoped passthrough for `surfaceId`.
-    function passthroughActor(bytes32 surfaceId, address a) external view returns (bool) {
-        return _passthroughActor[surfaceId][a];
-    }
-
     // ─── Quote ──────────────────────────────────────────────────────────
 
     /// @inheritdoc IExitFeeController
@@ -1050,34 +947,26 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     // ─── Delay quote + resolution ─────────────────────
 
     /// @inheritdoc IExitFeeController
-    function effectiveActor(bytes32 surfaceId, address raw, address receiver) public view returns (address) {
-        // A passthrough registered FOR THIS SURFACE resolves to the receiver;
-        // otherwise identity. Never collapses identities globally — a
-        // surface with no passthrough entry returns `raw` unchanged, so margin
-        // and Zero keep their real originator/owner.
-        return _passthroughActor[surfaceId][raw] ? receiver : raw;
-    }
-
-    /// @inheritdoc IExitFeeController
     function quoteExitDelayFor(
         address rawOriginator,
         address owner_,
-        address receiver,
+        address, /* receiver: fixed by the hook, never consulted here */
         bytes32 surfaceId,
         address subProduct
     ) external view returns (uint32 d, address effOrig, address effOwner) {
-        // KILL-SWITCH SHORT-CIRCUIT FIRST: a disabled perimeter pays
-        // direct WITHOUT consulting the passthrough registry or the queue — the
-        // liveness escape. Returns RAW identities; the hook must ignore them and
-        // pay direct whenever d == 0, so the raw identities never record.
+        // KILL-SWITCH SHORT-CIRCUIT FIRST: a disabled perimeter pays direct
+        // WITHOUT consulting the bypass tiers or the queue — the liveness
+        // escape. The hook must ignore the identities and pay direct whenever
+        // d == 0, so nothing records.
         if (!securityPerimeterEnabled) {
             return (0, rawOriginator, owner_);
         }
 
-        // Resolve the surface-scoped effective identities, then quote on
-        // effOrig, so the quote and the record share ONE identity.
-        effOrig = effectiveActor(surfaceId, rawOriginator, receiver);
-        effOwner = effectiveActor(surfaceId, owner_, receiver);
+        // The recorded identities are the real ones: the caller that
+        // withdraws and the owner of what it withdraws. The quote is made on
+        // the originator so the quote and the record share ONE identity.
+        effOrig = rawOriginator;
+        effOwner = owner_;
         d = _resolveDelay(surfaceId, subProduct, effOrig);
     }
 

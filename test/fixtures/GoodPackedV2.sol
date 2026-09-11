@@ -32,7 +32,7 @@ import {IExitFeeController} from "../../src/ExitFeeController.sol";
 ///      then place the two packed uint128 fields at the FIRST still-unused
 ///      __gap slot and shrink __gap by 1 (29 -> 28). The mirror below is
 ///      current as of the security-perimeter delay extension (admin alone in
-///      its shipped slot, bypass tiers, passthrough registry, enumeration
+///      its shipped slot, bypass tiers, enumeration
 ///      sets, then the two delay scalars in a reclaimed gap slot).
 contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
     using EnumerableSet for EnumerableSet.AddressSet;
@@ -63,12 +63,9 @@ contract GoodPackedV2 is Initializable, UUPSUpgradeable, Ownable2StepUpgradeable
     EnumerableSet.Bytes32Set internal _surfaceBypassKeys; // slots 261..262 (2 slots)
     mapping(bytes32 => EnumerableSet.AddressSet) internal _subProductBypassKeys;
     mapping(bytes32 => EnumerableSet.AddressSet) internal _actorBypassKeys;
-    mapping(bytes32 => mapping(address => bool)) internal _passthroughActor;
-    mapping(bytes32 => EnumerableSet.AddressSet) internal _passthroughKeys;
-    EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 267..268 (2 slots)
-    EnumerableSet.Bytes32Set internal _passthroughSurfaceIds; // slots 269..270 (2 slots)
+    EnumerableSet.Bytes32Set internal _bypassSurfaceIds; // slots 265..266 (2 slots)
 
-    // slot 271 (packed: bool@0, uint32@1) — the delay scalars.
+    // slot 267 (packed: bool@0, uint32@1) — the delay scalars.
     bool public securityPerimeterEnabled;
     uint32 public globalDelaySeconds;
 
