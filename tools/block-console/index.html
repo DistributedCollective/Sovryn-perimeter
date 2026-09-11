@@ -158,11 +158,18 @@
 
     <div class="card" id="pauseCard" hidden>
       <b>Too much at once to cherry-pick?</b>
-      <p style="font-size:13px;color:var(--note);margin:6px 0 10px">Pausing stops every payout from the
-        vault while still letting new withdrawals escrow — the products keep working and nothing leaves.
-        Use it when the fraudulent requests cannot be picked out one by one, then resume once they can.</p>
+      <p style="font-size:13px;color:var(--note);margin:6px 0 10px">Pausing stops every user payout:
+        <code>executeExit</code>, <code>executeExits</code> and <code>recoverStuckExit</code> refuse every
+        caller — the originator, the owner, and anyone delivering a contract-owned request — so users have no
+        path of their own to their money while it holds. New withdrawals still escrow, and the block levers
+        still work. It does <b>not</b> stop the Owner and Admin legs, which still pay out: the Admin-or-Owner
+        <code>resolveToProtocol</code>, still bound to a blacklisted originator or owner and a matching active
+        route, and the Owner&rsquo;s <code>resolveBySIP</code> — while paused, <b>every</b> queued request,
+        unlocked and unblocked ones included, is eligible for it. Owner configuration and
+        <code>sweepSurplus</code> are unaffected. Use it when the fraudulent requests cannot be picked out one
+        by one, then resume once they can.</p>
       <div class="bar" style="margin:0">
-        <button class="ghost" id="pauseBtn">Pause all releases</button>
+        <button class="ghost" id="pauseBtn">Pause releases</button>
         <span class="count" id="pauseState"></span>
       </div>
       <div id="pauseOut"></div>
@@ -409,9 +416,9 @@ function setStrip() {
     `<span class="pill">requests <b>${CTX.last}</b></span>`;
   const card = $("pauseCard");
   card.hidden = false;
-  $("pauseBtn").textContent = CTX.paused ? "Resume releases" : "Pause all releases";
+  $("pauseBtn").textContent = CTX.paused ? "Resume releases" : "Pause releases";
   $("pauseState").textContent = CTX.paused
-    ? "Every payout is currently halted. New withdrawals still escrow."
+    ? "User payouts are halted and new withdrawals still escrow. The Owner's resolveBySIP and the Admin-or-Owner resolveToProtocol still pay out."
     : "Releases are live.";
   $("pauseOut").innerHTML = "";
 }

@@ -29,9 +29,17 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///         `freeze` over a blacklisted address REVERTS on chain, which is why
 ///         this script refuses it here.
 ///
-///         `pause` - global. Halts `executeExit` and `recoverStuckExit` for
-///         everyone. It does NOT stop new exits entering the queue: escrow still
-///         records normally, so the products keep working and nothing leaves.
+///         `pause` - global. Stops `executeExit`, `executeExits` and
+///         `recoverStuckExit` for every caller - the originator, the owner, and
+///         anyone delivering a contract-owned request - so users have no path of
+///         their own while it holds. It does NOT stop new exits entering the
+///         queue: the four `record*` functions and `receive` keep escrowing, so
+///         the products keep working. It does NOT stop the block levers, the
+///         Admin-or-Owner `resolveToProtocol` (still bound to a blacklisted
+///         originator or owner and a matching active route), or the Owner's
+///         `resolveBySIP`, and those legs still pay out. While paused EVERY
+///         queued request, unlocked and unblocked ones included, is eligible for
+///         `resolveBySIP`. Owner configuration and `sweepSurplus` are unaffected.
 ///         Use it when the target is not yet identified; use the per-actor lever
 ///         once it is.
 ///
@@ -165,11 +173,18 @@ contract BlockExits is Script {
             console2.log("ALREADY in the requested state - nothing to submit.");
             return;
         }
-        console2.log(
-            on
-                ? "Halts executeExit and recoverStuckExit for EVERYONE. New exits keep escrowing."
-                : "Resumes executeExit and recoverStuckExit. Per-actor blocks are unaffected."
-        );
+        if (on) {
+            console2.log("Stops executeExit, executeExits and recoverStuckExit for every caller - the originator, the");
+            console2.log("owner, and anyone delivering a contract-owned request. New exits keep escrowing.");
+            console2.log("Still live, and still paying out: the Admin-or-Owner resolveToProtocol (a blacklisted");
+            console2.log("originator or owner with a matching active route) and the Owner's resolveBySIP. While");
+            console2.log("paused, EVERY queued request - unlocked and unblocked ones included - is eligible for");
+            console2.log("resolveBySIP. The block levers, Owner configuration and sweepSurplus are unaffected.");
+        } else {
+            console2.log("Resumes executeExit, executeExits and recoverStuckExit. Per-actor blocks are unaffected.");
+            console2.log("resolveBySIP again reaches only requests with a blocked originator, owner or receiver,");
+            console2.log("or still locked.");
+        }
         _emitCalldata(
             address(queue), abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)), on ? "pause" : "unpause"
         );
