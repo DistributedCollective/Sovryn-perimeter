@@ -908,11 +908,13 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
             return quote;
         }
 
-        // Defensive overflow guards. With rateBps capped at MAX_BPS (10_000)
-        // these can only trip for genuinely absurd `grossAmount` -- but if
-        // they do, we surface INVALID_QUOTE so the product can log it
-        // instead of silently charging the wrong amount.
-        if (grossAmount > type(uint256).max / MAX_BPS) {
+        // Defensive overflow guard on the multiplication below, checked against
+        // the rate that resolved rather than the ceiling: a gross that
+        // multiplies safely at this rate must quote a fee, not report
+        // INVALID_QUOTE and let the fee leg be skipped. A zero rate cannot
+        // overflow and needs no guard. If it trips, INVALID_QUOTE lets the
+        // product log it instead of silently charging the wrong amount.
+        if (policy.rateBps != 0 && grossAmount > type(uint256).max / policy.rateBps) {
             quote.reason = uint8(SkipReason.INVALID_QUOTE);
             return quote;
         }

@@ -300,7 +300,7 @@ contract ExitFeeControllerTest is Test {
         controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 50}));
         vm.stopPrank();
 
-        uint256 huge = type(uint256).max / 9_999; // would overflow gross * MAX_BPS
+        uint256 huge = type(uint256).max / 49; // would overflow gross * 50
         IExitFeeController.ExitFeeQuote memory q = _quote(IXUSD, huge);
         assertEq(q.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE));
         assertEq(q.netAmount, huge); // synthesized echo of gross
@@ -317,7 +317,7 @@ contract ExitFeeControllerTest is Test {
         controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 50}));
         vm.stopPrank();
 
-        uint256 edge = type(uint256).max / 10_000;
+        uint256 edge = type(uint256).max / 50; // largest gross that cannot overflow at the resolved 50 bp
 
         IExitFeeController.ExitFeeQuote memory qEdge = _quote(IXUSD, edge);
         assertTrue(qEdge.active, "edge value must quote honestly");
@@ -328,6 +328,48 @@ contract ExitFeeControllerTest is Test {
         assertFalse(qOver.active);
         assertEq(qOver.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE));
         assertEq(qOver.netAmount, edge + 1);
+    }
+
+    /// @dev The overflow guard follows the rate that resolved. At 1 bp a gross
+    ///      above `type(uint256).max / 10_000` still multiplies safely, so it
+    ///      quotes a fee instead of reporting INVALID_QUOTE and letting the
+    ///      withdrawal skip the fee leg.
+    function test_overflow_guard_uses_the_resolved_rate_at_one_bp() public {
+        vm.startPrank(ADMIN);
+        controller.setFeeReceiver(VAULT);
+        controller.setExitFeeEnabled(true);
+        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 1}));
+        vm.stopPrank();
+
+        uint256 gross = type(uint256).max / 10_000 + 1;
+        IExitFeeController.ExitFeeQuote memory q = _quote(IXUSD, gross);
+        assertTrue(q.active, "a gross that multiplies safely at 1 bp quotes a fee");
+        assertEq(q.reason, uint8(IExitFeeController.SkipReason.NONE));
+        assertEq(q.rateBps, 1);
+        assertEq(q.feeAmount, gross / 10_000);
+        assertEq(q.feeAmount + q.netAmount, gross);
+    }
+
+    /// @dev A gross whose multiplication does overflow at the resolved rate
+    ///      still reports INVALID_QUOTE, one wei past the largest safe value.
+    function test_overflow_guard_still_refuses_a_real_overflow_at_the_resolved_rate() public {
+        vm.startPrank(ADMIN);
+        controller.setFeeReceiver(VAULT);
+        controller.setExitFeeEnabled(true);
+        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 1}));
+        controller.setActorPolicy(SURFACE, ACTOR, IExitFeeController.RatePolicy({active: true, rateBps: 7}));
+        vm.stopPrank();
+
+        uint256 safeAtSeven = type(uint256).max / 7;
+        IExitFeeController.ExitFeeQuote memory qSafe = _quote(IXUSD, safeAtSeven);
+        assertTrue(qSafe.active, "largest gross that cannot overflow at 7 bp quotes");
+        assertEq(qSafe.feeAmount, (safeAtSeven * 7) / 10_000);
+
+        IExitFeeController.ExitFeeQuote memory qOver = _quote(IXUSD, safeAtSeven + 1);
+        assertFalse(qOver.active);
+        assertEq(qOver.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE));
+        assertEq(qOver.feeAmount, 0);
+        assertEq(qOver.netAmount, safeAtSeven + 1);
     }
 
     // ─── Admin / setter validation ───────────────────────────────────────
@@ -811,8 +853,8 @@ contract ExitFeeControllerTest is Test {
             assertEq(q.netAmount, grossAmount, "net = gross in off-state");
             assertEq(q.feeAmount, 0, "fee = 0 in off-state");
             // The only off-state reason reachable with everything-on +
-            // a configured surface is the overflow guard.
-            if (grossAmount > type(uint256).max / 10_000) {
+            // a configured surface is the overflow guard, at the resolved rate.
+            if (rateBps != 0 && grossAmount > type(uint256).max / rateBps) {
                 assertEq(
                     q.reason, uint8(IExitFeeController.SkipReason.INVALID_QUOTE), "overflow -> INVALID_QUOTE"
                 );
