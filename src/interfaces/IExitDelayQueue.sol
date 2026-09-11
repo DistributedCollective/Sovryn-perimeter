@@ -49,7 +49,7 @@ interface IExitDelayQueue {
         uint64 createdAt; //  audit/analytics; emitted in ExitQueued
         uint64 unlockAt; //   COMPUTED by the queue = createdAt + delaySeconds
         // words 2-5:
-        address originator; // withdrawal caller (effective, post-normalization) — block key + executor
+        address originator; // withdrawal caller the hook saw — block key + executor
         address owner; //      position owner — MANDATORY block key + executor
         address receiver; //   immutable payout destination — block key iff freezeReceiver; NOT an executor
         address token; //      address(0) = native RBTC
@@ -114,7 +114,7 @@ interface IExitDelayQueue {
 
     error UnregisteredSource(address caller); //  onlyAllowedSource — DISTINCT record-path halt selector
     error ActorBlocked(address actor, BlockState state); // execution-gate revert (event: AccountBlocked)
-    error NotExecutor(address caller); //         msg.sender ∉ {originator, owner} and the owner is not a contract
+    error NotExecutor(address caller); //         msg.sender ∉ {originator, owner}; on delivery, also the owner has no code
     error NotUnlocked(uint256 id, uint64 unlockAt);
     error QueuePaused();
     error AlreadyTerminal(uint256 id); //         status != Queued at a transition (also duplicate-batch-id)
@@ -202,14 +202,34 @@ interface IExitDelayQueue {
 
     // ─── Execution ───────────────────────────────────────────────
 
+    /// @notice Pay an unlocked request to its recorded receiver. Who may call:
+    ///         the request's originator or owner, always; ANYONE, when the recorded
+    ///         owner has code at the moment of this call (a contract, or a wallet
+    ///         that has delegated to code), because a contract owner cannot press
+    ///         the button itself. The owner's code is read when delivery is called,
+    ///         not when the request was recorded. Whoever calls, the money goes
+    ///         only to the recorded receiver, and the call reverts while the
+    ///         originator, the owner or the receiver is frozen or blacklisted. A
+    ///         caller who is not a party must not be frozen or blacklisted either.
+    ///         Blocking whoever presses deliver does not hold a contract-owned
+    ///         request — block a recorded party to hold it. Reverts while the
+    ///         queue is paused or the request is still locked.
     function executeExit(uint256 requestId) external;
 
+    /// @notice `executeExit` for several ids in one call, with the same rule
+    ///         applied to each id: parties always, anyone when that request's
+    ///         owner has code, never a blocked caller. Atomic: one id that fails
+    ///         reverts the whole batch. Blocking whoever presses deliver does not
+    ///         hold a contract-owned request — block a recorded party to hold it.
     function executeExits(uint256[] calldata ids) external;
 
     /// @notice Verify-by-attempting stuck-exit recovery. Callable ONLY by the
-    ///         frozen-metadata `{originator, owner}` set (the receiver is NEVER an
-    ///         executor). Requires the request Queued, unlocked, and the queue not
-    ///         paused.
+    ///         request's originator or owner, whether or not the owner has code —
+    ///         narrower than delivery on purpose: delivery pays only the recorded
+    ///         receiver, while this call names a destination, so opening it the
+    ///         same way would let anyone take a contract-owned request whose
+    ///         receiver refuses payment. The receiver is NEVER a caller. Requires
+    ///         the request Queued, unlocked, and the queue not paused.
     ///
     ///         Attempts the STORED-receiver payout FIRST; pays `altReceiver` ONLY if
     ///         the stored-receiver payout genuinely bounces — so a HEALTHY exit is

@@ -112,7 +112,7 @@ contract ExitDelayQueue is
 
     mapping(uint256 => ExitRequest) internal _requests;
 
-    /// @dev Executor party (originator, owner) → status==Queued request ids.
+    /// @dev Recorded party (originator, owner) → status==Queued request ids.
     ///      A freeze HOLDS but does not remove (Frozen is an address state, not
     ///      a request status). Dual-key when originator != owner. No
     ///      on-chain path iterates the full set — only O(1) add/remove and the

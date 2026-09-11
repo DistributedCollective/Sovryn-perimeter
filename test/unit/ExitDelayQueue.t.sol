@@ -2804,6 +2804,87 @@ contract ExitDelayQueueTest is Test {
         queue.executeExit(id);
     }
 
+    /// @notice The code test is on the recorded owner, not the originator: a
+    ///         request initiated by a contract for a wallet owner stays with its
+    ///         parties.
+    function test_execute_outsider_refused_when_only_the_originator_has_code() public {
+        address contractOriginator = address(token);
+        uint256 id = _queueErc20With(10 ether, contractOriginator, OWNR, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(OUTSIDER);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, OUTSIDER));
+        queue.executeExit(id);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        vm.prank(OUTSIDER);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, OUTSIDER));
+        queue.executeExits(ids);
+        assertEq(uint8(queue.getRequest(id).status), uint8(IExitDelayQueue.ExitStatus.Queued));
+    }
+
+    /// @notice A wallet may initiate a request whose owner is a contract; the
+    ///         owner's code alone opens delivery.
+    function test_execute_anyone_when_only_the_owner_has_code() public {
+        address contractOwner = address(token);
+        uint256 id = _queueErc20With(10 ether, ORIG, contractOwner, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        uint256 before = token.balanceOf(RCVR);
+        vm.prank(OUTSIDER);
+        queue.executeExit(id);
+        assertEq(token.balanceOf(RCVR) - before, 10 ether, "receiver paid in full");
+    }
+
+    /// @notice An owner whose address carries a delegation designator has code,
+    ///         so its unlocked request is deliverable by anyone, to its receiver.
+    function test_execute_anyone_when_the_owner_carries_a_delegation_designator() public {
+        address delegated = address(0xDE1E);
+        vm.etch(delegated, abi.encodePacked(hex"ef0100", address(token)));
+        uint256 id = _queueErc20With(10 ether, delegated, delegated, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        uint256 before = token.balanceOf(RCVR);
+        vm.prank(OUTSIDER);
+        queue.executeExit(id);
+        assertEq(token.balanceOf(RCVR) - before, 10 ether);
+    }
+
+    /// @notice The redirect lever stays with the originator and the owner, even
+    ///         when the owner has code and the receiver refuses payment: an
+    ///         outsider cannot name a destination for someone else's money.
+    function test_recover_outsider_refused_when_owner_has_code_and_receiver_bounces() public {
+        RevertingReceiver rr = new RevertingReceiver();
+        address contractOwner = address(token);
+        uint256 id = source.recordNative{value: 4 ether}(
+            4 ether, DELAY, SURFACE_ZERO, address(0), contractOwner, contractOwner, address(rr)
+        );
+        vm.warp(block.timestamp + DELAY);
+        uint256 outsiderBefore = OUTSIDER.balance;
+        vm.prank(OUTSIDER);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, OUTSIDER));
+        queue.recoverStuckExit(id, OUTSIDER);
+        assertEq(uint8(queue.getRequest(id).status), uint8(IExitDelayQueue.ExitStatus.Queued));
+        assertEq(queue.totalEscrowed(address(0)), 4 ether);
+        assertEq(OUTSIDER.balance, outsiderBefore);
+    }
+
+    /// @notice The batch path applies the executor block check too.
+    function test_executeExits_blocked_executor_reverts_when_owner_is_a_contract() public {
+        address contractOwner = address(token);
+        uint256 id = _queueErc20With(10 ether, contractOwner, contractOwner, RCVR);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ADMIN);
+        queue.blacklist(OUTSIDER);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = id;
+        vm.prank(OUTSIDER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, OUTSIDER, IExitDelayQueue.BlockState.Blacklisted
+            )
+        );
+        queue.executeExits(ids);
+        assertEq(uint8(queue.getRequest(id).status), uint8(IExitDelayQueue.ExitStatus.Queued));
+    }
+
     /// @notice A blocked party still refuses delivery whoever presses the button.
     function test_execute_anyone_still_refused_when_receiver_is_blocked() public {
         address contractOwner = address(token);
