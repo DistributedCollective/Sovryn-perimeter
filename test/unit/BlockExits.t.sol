@@ -79,6 +79,10 @@ contract BlockExitsHarness is BlockExits {
     {
         return _partiesBehind(ids, freezeReceiver);
     }
+
+    function verifyActionFor(string memory action) external pure returns (string memory) {
+        return _verifyActionFor(action);
+    }
 }
 
 /// @title  Emergency block preview - 07_BlockExits
@@ -316,7 +320,7 @@ contract BlockExitsTest is Test {
     function test_unknown_action_is_rejected() public {
         vm.expectRevert(
             bytes(
-                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
+                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, verify, pause, unpause, verify-pause, verify-unpause, disable-perimeter, enable-perimeter, verify-disable-perimeter, verify-enable-perimeter"
             )
         );
         script.dispatch("halt", _addrs(ORIG), _noIds(), false, "");
@@ -370,8 +374,92 @@ contract BlockExitsTest is Test {
     }
 
     function test_kill_switch_requires_the_controller_address() public {
-        vm.expectRevert(bytes("set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter"));
+        vm.expectRevert(
+            bytes("set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter and their verify actions")
+        );
         script.dispatch("disable-perimeter", _noAddrs(), _noIds(), false, "");
+    }
+
+    // --- verifying what an emitted call changed --------------------------
+
+    /// @notice The multisig reports success even when the call inside it failed,
+    ///         so after a pause the operator reads the pause state back. The
+    ///         check refuses while the queue still reads unpaused.
+    function test_verify_pause_confirms_only_a_paused_queue() public {
+        vm.expectRevert(bytes("NOT CONFIRMED: the queue reads unpaused - the pause did not take effect"));
+        script.dispatch("verify-pause", _noAddrs(), _noIds(), false, "");
+
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(true);
+        script.dispatch("verify-pause", _noAddrs(), _noIds(), false, "");
+    }
+
+    function test_verify_unpause_confirms_only_an_unpaused_queue() public {
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(true);
+        vm.expectRevert(bytes("NOT CONFIRMED: the queue still reads paused - the resume did not take effect"));
+        script.dispatch("verify-unpause", _noAddrs(), _noIds(), false, "");
+
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(false);
+        script.dispatch("verify-unpause", _noAddrs(), _noIds(), false, "");
+    }
+
+    /// @notice After a switch-on the check reads both the switch and the length:
+    ///         a switch that reads on with the length unset holds nothing and is
+    ///         not confirmed.
+    function test_verify_enable_perimeter_confirms_the_switch_and_the_length() public {
+        ExitFeeController ctrl = _deployController();
+        script.initController(address(ctrl));
+        vm.expectRevert(bytes("NOT CONFIRMED: the delay switch reads off - the switch-on did not take effect"));
+        script.dispatch("verify-enable-perimeter", _noAddrs(), _noIds(), false, "");
+
+        _switchOnWithLengthUnset(ctrl);
+        vm.expectRevert(
+            bytes("NOT CONFIRMED: the delay switch reads on but the length is unset (0) - no withdrawal is held")
+        );
+        script.dispatch("verify-enable-perimeter", _noAddrs(), _noIds(), false, "");
+
+        ctrl.setGlobalDelaySeconds(1 days);
+        script.dispatch("verify-enable-perimeter", _noAddrs(), _noIds(), false, "");
+    }
+
+    function test_verify_disable_perimeter_confirms_only_a_switched_off_delay() public {
+        ExitFeeController ctrl = _deployController();
+        ctrl.setGlobalDelaySeconds(1 days);
+        ctrl.setSecurityPerimeterEnabled(true);
+        script.initController(address(ctrl));
+        vm.expectRevert(bytes("NOT CONFIRMED: the delay switch still reads on - the switch-off did not take effect"));
+        script.dispatch("verify-disable-perimeter", _noAddrs(), _noIds(), false, "");
+
+        ctrl.setSecurityPerimeterEnabled(false);
+        script.dispatch("verify-disable-perimeter", _noAddrs(), _noIds(), false, "");
+    }
+
+    function test_verify_of_the_delay_switch_requires_the_controller_address() public {
+        vm.expectRevert(
+            bytes("set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter and their verify actions")
+        );
+        script.dispatch("verify-enable-perimeter", _noAddrs(), _noIds(), false, "");
+        vm.expectRevert(
+            bytes("set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter and their verify actions")
+        );
+        script.dispatch("verify-disable-perimeter", _noAddrs(), _noIds(), false, "");
+    }
+
+    /// @notice Every emitted call names the verify action that reads back what
+    ///         that call changed: the pause state, the delay switch and length,
+    ///         or the block states of the parties.
+    function test_each_emitted_call_names_the_verify_action_for_what_it_changed() public view {
+        assertEq(script.verifyActionFor("pause"), "verify-pause");
+        assertEq(script.verifyActionFor("unpause"), "verify-unpause");
+        assertEq(script.verifyActionFor("disable-perimeter"), "verify-disable-perimeter");
+        assertEq(script.verifyActionFor("enable-perimeter"), "verify-enable-perimeter");
+        assertEq(script.verifyActionFor("freeze"), "verify");
+        assertEq(script.verifyActionFor("blacklist"), "verify");
+        assertEq(script.verifyActionFor("downgrade"), "verify");
+        assertEq(script.verifyActionFor("unfreeze"), "verify");
+        assertEq(script.verifyActionFor("unblacklist"), "verify");
     }
 
     function test_disable_perimeter_previews_when_enabled() public {

@@ -54,9 +54,11 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 /// @dev Usage:
 ///
 ///   export EXIT_DELAY_QUEUE=0x...            # the queue (required)
-///   export EXIT_FEE_CONTROLLER=0x...         # controller; only the two kill-switch actions need it
-///   export BLOCK_ACTION=freeze               # freeze|blacklist|downgrade|unfreeze|unblacklist|pause|unpause|verify
+///   export EXIT_FEE_CONTROLLER=0x...         # controller; only the delay switch actions and their verify actions need it
+///   export BLOCK_ACTION=freeze               # freeze|blacklist|downgrade|unfreeze|unblacklist|verify
+///                                            # |pause|unpause|verify-pause|verify-unpause
 ///                                            # |disable-perimeter|enable-perimeter (controller kill switch)
+///                                            # |verify-disable-perimeter|verify-enable-perimeter
 ///
 ///   # exactly one of these two for freeze/blacklist; actors only for downgrade and the clears:
 ///   export BLOCK_ACTORS=0xaaa,0xbbb          # addresses to block or clear
@@ -67,8 +69,14 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///
 ///   forge script script/07_BlockExits.s.sol --rpc-url $RPC
 ///
-///   Then submit the printed calldata to the queue from the Admin Safe, and
-///   re-run with BLOCK_ACTION=verify to confirm the resulting states.
+///   Then submit the printed calldata from the Admin Safe and re-run with the
+///   verify action the preview prints. The multisig reports success even when
+///   the call inside it failed, so the state is read back rather than assumed:
+///   `verify` after a block, downgrade or clear reads the parties' block states
+///   (keep BLOCK_ACTORS or BLOCK_REQUEST_IDS set); `verify-pause` and
+///   `verify-unpause` read the pause state; `verify-disable-perimeter` and
+///   `verify-enable-perimeter` read the delay switch and its length. Each
+///   verify-* action refuses unless the state matches the call.
 contract BlockExits is Script {
     ExitDelayQueue internal queue;
     ExitFeeController internal controller;
@@ -131,13 +139,21 @@ contract BlockExits is Script {
             _clear(false, actors, ids);
         } else if (a == keccak256("verify")) {
             _verify(actors, ids, freezeReceiver);
+        } else if (a == keccak256("verify-pause")) {
+            _verifyPause(true);
+        } else if (a == keccak256("verify-unpause")) {
+            _verifyPause(false);
         } else if (a == keccak256("disable-perimeter")) {
             _killSwitch(false);
         } else if (a == keccak256("enable-perimeter")) {
             _killSwitch(true);
+        } else if (a == keccak256("verify-disable-perimeter")) {
+            _verifyDelaySwitch(false);
+        } else if (a == keccak256("verify-enable-perimeter")) {
+            _verifyDelaySwitch(true);
         } else {
             revert(
-                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, pause, unpause, verify, disable-perimeter, enable-perimeter"
+                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, verify, pause, unpause, verify-pause, verify-unpause, disable-perimeter, enable-perimeter, verify-disable-perimeter, verify-enable-perimeter"
             );
         }
     }
@@ -154,7 +170,9 @@ contract BlockExits is Script {
                 ? "Halts executeExit and recoverStuckExit for EVERYONE. New exits keep escrowing."
                 : "Resumes executeExit and recoverStuckExit. Per-actor blocks are unaffected."
         );
-        _emitCalldata(address(queue), abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)));
+        _emitCalldata(
+            address(queue), abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)), on ? "pause" : "unpause"
+        );
     }
 
     // --- Controller kill switch -----------------------------------------
@@ -175,10 +193,7 @@ contract BlockExits is Script {
     ///      already reads on with no length holds nothing, so it is reported as
     ///      unset, never as already done.
     function _killSwitch(bool enabled) internal view {
-        require(
-            address(controller) != address(0),
-            "set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter"
-        );
+        _requireController();
         console2.log("controller           :", address(controller));
         console2.log("controller admin     :", controller.admin());
         console2.log("controller owner     :", controller.owner());
@@ -207,11 +222,9 @@ contract BlockExits is Script {
         );
         _emitCalldata(
             address(controller),
-            abi.encodeCall(ExitFeeController.setSecurityPerimeterEnabled, (enabled))
+            abi.encodeCall(ExitFeeController.setSecurityPerimeterEnabled, (enabled)),
+            enabled ? "enable-perimeter" : "disable-perimeter"
         );
-        console2.log("The multisig transaction succeeds even when the call inside it reverts. After it");
-        console2.log("executes, read securityPerimeterEnabled() on the controller and confirm it reads");
-        console2.log(enabled ? "true." : "false.");
     }
 
     // --- Per-actor block ------------------------------------------------
@@ -304,7 +317,7 @@ contract BlockExits is Script {
         if (changing == 0) {
             console2.log("NOTE: no state changes. The call still succeeds and re-emits AccountBlocked.");
         }
-        _emitCalldata(address(queue), data);
+        _emitCalldata(address(queue), data, freezing ? "freeze" : "blacklist");
     }
 
     // --- Blacklisted -> Frozen ------------------------------------------
@@ -338,7 +351,9 @@ contract BlockExits is Script {
             "downgrade requires every address to be Blacklisted - freeze is how a clear address is held"
         );
         console2.log("NOTE: the recorded trigger is kept - a downgrade is still a block.");
-        _emitCalldata(address(queue), abi.encodeWithSignature("downgradeToFrozen(address[])", actors));
+        _emitCalldata(
+            address(queue), abi.encodeWithSignature("downgradeToFrozen(address[])", actors), "downgrade"
+        );
     }
 
     // --- Per-actor clear ------------------------------------------------
@@ -381,14 +396,54 @@ contract BlockExits is Script {
             address(queue),
             unfreezing
                 ? abi.encodeWithSignature("unfreeze(address[])", actors)
-                : abi.encodeWithSignature("unblacklist(address[])", actors)
+                : abi.encodeWithSignature("unblacklist(address[])", actors),
+            unfreezing ? "unfreeze" : "unblacklist"
         );
     }
 
     // --- Verify ---------------------------------------------------------
 
-    /// @dev Run after the Safe transaction executes. Prints the live state of
-    ///      every address named directly, plus the parties behind the request
+    /// @dev Run after a pause or unpause executes. The multisig reports success
+    ///      even when the call inside it failed, so the pause state is read back
+    ///      and the check refuses unless it matches the call that was emitted.
+    function _verifyPause(bool paused) internal view {
+        if (queue.securityPerimeterPaused() != paused) {
+            revert(
+                paused
+                    ? "NOT CONFIRMED: the queue reads unpaused - the pause did not take effect"
+                    : "NOT CONFIRMED: the queue still reads paused - the resume did not take effect"
+            );
+        }
+        console2.log(paused ? "CONFIRMED: the queue reads paused." : "CONFIRMED: the queue reads unpaused.");
+    }
+
+    /// @dev Run after the delay switch executes. Reads the switch and the length
+    ///      back and refuses unless they match the call that was emitted. A
+    ///      switch-on is confirmed only with a length set: a switch that reads on
+    ///      with the length unset holds no withdrawal.
+    function _verifyDelaySwitch(bool enabled) internal view {
+        _requireController();
+        bool current = controller.securityPerimeterEnabled();
+        uint32 length = controller.globalDelaySeconds();
+        console2.log("controller           :", address(controller));
+        console2.log("perimeter enabled    :", current);
+        console2.log("global delay length  :", uint256(length), "seconds (0 = unset)");
+        if (enabled) {
+            if (!current) revert("NOT CONFIRMED: the delay switch reads off - the switch-on did not take effect");
+            if (length == 0) {
+                revert("NOT CONFIRMED: the delay switch reads on but the length is unset (0) - no withdrawal is held");
+            }
+            console2.log("CONFIRMED: the delay switch reads on with a length set.");
+        } else {
+            if (current) {
+                revert("NOT CONFIRMED: the delay switch still reads on - the switch-off did not take effect");
+            }
+            console2.log("CONFIRMED: the delay switch reads off - hooked withdrawals pay straight out.");
+        }
+    }
+
+    /// @dev Run after a block, downgrade or clear executes. Prints the live state
+    ///      of every address named directly, plus the parties behind the request
     ///      ids, so the operator confirms the outcome rather than assuming it
     ///      from a successful transaction.
     function _verify(address[] memory actorsIn, uint256[] memory ids, bool freezeReceiver) internal view {
@@ -475,7 +530,9 @@ contract BlockExits is Script {
         return keccak256(bytes(reason));
     }
 
-    function _emitCalldata(address to, bytes memory data) internal view {
+    /// @dev Prints the calldata to submit for `action`, then the verify action
+    ///      that reads back what it changed.
+    function _emitCalldata(address to, bytes memory data, string memory action) internal view {
         console2.log("--- submit from the Admin multisig ---");
         console2.log("to   :", to);
         console2.log("value: 0");
@@ -491,7 +548,38 @@ contract BlockExits is Script {
         console2.log("  the threshold confirmation executes the call in the same transaction.");
         console2.log("");
         console2.log("--- then confirm the result ---");
-        console2.log("BLOCK_ACTION=verify forge script script/07_BlockExits.s.sol --rpc-url $RPC");
+        console2.log(
+            "The multisig reports success even when the call inside it failed, so read the state after it executes:"
+        );
+        console2.log(
+            string.concat(
+                "BLOCK_ACTION=", _verifyActionFor(action), " forge script script/07_BlockExits.s.sol --rpc-url $RPC"
+            )
+        );
+    }
+
+    /// @dev The verify action that reads back what `action` changed: the pause
+    ///      state after pause or unpause, the switch and length after the delay
+    ///      switch, and the block states of the parties after a block, downgrade
+    ///      or clear.
+    function _verifyActionFor(string memory action) internal pure returns (string memory) {
+        bytes32 a = keccak256(bytes(action));
+        if (
+            a == keccak256("pause") || a == keccak256("unpause") || a == keccak256("disable-perimeter")
+                || a == keccak256("enable-perimeter")
+        ) {
+            return string.concat("verify-", action);
+        }
+        return "verify";
+    }
+
+    /// @dev The delay switch lives on the controller, so its actions and their
+    ///      verification need its address.
+    function _requireController() internal view {
+        require(
+            address(controller) != address(0),
+            "set EXIT_FEE_CONTROLLER for disable-perimeter / enable-perimeter and their verify actions"
+        );
     }
 
     function _stateName(IExitDelayQueue.BlockState s) internal pure returns (string memory) {
