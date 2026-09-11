@@ -230,6 +230,21 @@ contract GasSinkReceiver {
     }
 }
 
+/// @dev Receiver that accepts native RBTC after spending a fixed amount of gas,
+///      and runs out of gas when given less.
+contract GasHungryReceiver {
+    uint256 public immutable spend;
+
+    constructor(uint256 spend_) {
+        spend = spend_;
+    }
+
+    receive() external payable {
+        uint256 start = gasleft();
+        while (start - gasleft() < spend) {}
+    }
+}
+
 /// @dev ERC20 whose transferFrom re-enters the queue's ingress. Proves
 ///      the `nonReentrant` guard on the four record* fns rejects a re-entrant
 ///      record during the token pull. The reentrant call MUST revert with the
@@ -1514,6 +1529,38 @@ contract ExitDelayQueueTest is Test {
         queue.recoverStuckExit(id, ALT); // ample gas from the test harness
         assertEq(ALT.balance, altBefore + 4 ether, "alt paid when receiver exceeds budget");
         assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Executed));
+    }
+
+    /// @notice The recovery gas boundary as built. A receiver that accepts within
+    ///         RECOVER_PAYOUT_GAS is paid. A receiver that would accept only with
+    ///         more gas is treated as refusing and the money goes to the alternate,
+    ///         although a plain delivery with enough gas pays that same receiver.
+    function test_recover_gas_boundary_as_built() public {
+        GasHungryReceiver within = new GasHungryReceiver(2_000_000);
+        GasHungryReceiver beyond = new GasHungryReceiver(3_100_000);
+        uint256 idWithin =
+            source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(within));
+        uint256 idBeyond =
+            source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(beyond));
+        uint256 idBeyondDelivered =
+            source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(beyond));
+        vm.warp(block.timestamp + DELAY);
+
+        uint256 altBefore = ALT.balance;
+
+        vm.prank(OWNR);
+        queue.recoverStuckExit{gas: 5_000_000}(idWithin, ALT);
+        assertEq(address(within).balance, 1 ether, "accepted within the budget: stored receiver paid");
+        assertEq(ALT.balance, altBefore, "alternate untouched");
+
+        vm.prank(OWNR);
+        queue.recoverStuckExit{gas: 5_000_000}(idBeyond, ALT);
+        assertEq(address(beyond).balance, 0, "needs more than the budget: stored receiver not paid");
+        assertEq(ALT.balance, altBefore + 1 ether, "redirected to the alternate");
+
+        vm.prank(OWNR);
+        queue.executeExit{gas: 5_000_000}(idBeyondDelivered);
+        assertEq(address(beyond).balance, 1 ether, "the same receiver accepts a plain delivery with enough gas");
     }
 
     /// @notice resolveBySIP rejects a destination that would trap or swallow the
