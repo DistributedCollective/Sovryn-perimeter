@@ -278,9 +278,13 @@
 
     <h2>Verify</h2>
     <ul>
-      <li>Method <b>12.&nbsp;isConfirmed</b> with the id returns <code>true</code> once the threshold is reached.</li>
-      <li>Reload this console: the blocked parties should show their new state in the
-        <b>Parties blocked</b> column.</li>
+      <li>Method <b>12.&nbsp;isConfirmed</b> with the id returns <code>true</code> once the threshold is reached.
+        That only says enough owners confirmed — <b>not that the call worked</b>.</li>
+      <li><b>The multisig reports success even when the call inside it failed.</b> A reverted inner call still
+        leaves a successful transaction; the multisig logs an <code>ExecutionFailure</code> event for that
+        transaction id instead of <code>Execution</code>. Check the third confirmation&rsquo;s <b>Logs</b> tab.</li>
+      <li>Then read the state itself: reload this console and confirm the blocked parties show their new state in
+        the <b>Parties blocked</b> column, or that the releases pill shows the pause you asked for.</li>
     </ul>
 
     <div class="card warn">
@@ -577,6 +581,9 @@ function generate() {
         <button class="ghost" id="copyAll">Copy all three fields</button>
         <span class="count" id="copied"></span>
       </div>
+      <p class="verifynote" style="font-size:13px;color:var(--warn);margin:12px 0 0"><b>After it executes, check the state.</b>
+        The multisig reports success even when the call inside it failed. Reload this console and confirm the
+        <b>Parties blocked</b> column shows the new state for every address listed above.</p>
     </div>`;
   const flash = (m) => { $("copied").textContent = m; setTimeout(() => ($("copied").textContent = ""), 1800); };
   $("copy").addEventListener("click", () => navigator.clipboard.writeText(data).then(() => flash("calldata copied")));
@@ -598,6 +605,9 @@ function generatePause() {
       <label style="margin-top:12px">data</label>
       <pre id="pcd">${data}</pre>
       <div class="bar"><button id="pcopy">Copy calldata</button><span class="count" id="pcopied"></span></div>
+      <p class="verifynote" style="font-size:13px;color:var(--warn);margin:12px 0 0"><b>After it executes, check the state.</b>
+        The multisig reports success even when the call inside it failed. Reload this console and confirm the
+        releases pill reads <b>${target ? "PAUSED" : "live"}</b>.</p>
     </div>`;
   $("pcopy").addEventListener("click", () => navigator.clipboard.writeText(data).then(() => {
     $("pcopied").textContent = "copied"; setTimeout(() => ($("pcopied").textContent = ""), 1800);
