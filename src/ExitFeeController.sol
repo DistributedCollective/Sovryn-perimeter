@@ -273,6 +273,8 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     error LengthMismatch();
     error OwnershipCannotBeRenounced();
     error UpgradeImplZero();
+    error DelayZero();
+    error DelayUnset();
 
     // ─── Custom errors (admin role) ─────────────────────────────────────
     error NotAdminOrOwner(address caller); // onlyAdminOrOwner gate
@@ -388,6 +390,10 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     /// @param  enabled Target state for the perimeter.
     // aderyn-ignore-next-line(centralization-risk)
     function setSecurityPerimeterEnabled(bool enabled) external onlyAdminOrOwner {
+        // Switching on with no delay length set would leave the switch reading
+        // on while every exit paid out immediately. Switching off is never
+        // blocked: it is the kill switch.
+        if (enabled && globalDelaySeconds == 0) revert DelayUnset();
         securityPerimeterEnabled = enabled;
         emit SecurityPerimeterEnabledSet(enabled);
     }
@@ -400,9 +406,13 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///         calls the queue (kill-switch queue-independence). A value
     ///         below the floor would self-brick every non-bypassed exit
     ///         (fail-closed) but can NEVER rush a request below the floor.
-    /// @param  seconds_ Delay in seconds (uint32; 0 is allowed and disables the
-    ///         delay for all non-bypassed exits, equivalent to a global bypass).
+    /// @param  seconds_ Delay in seconds (uint32). Zero is refused: a zero
+    ///         length would switch the delay off for every non-bypassed exit
+    ///         while `securityPerimeterEnabled` still read true. The delay is
+    ///         switched off with `setSecurityPerimeterEnabled(false)`, never
+    ///         by its length.
     function setGlobalDelaySeconds(uint32 seconds_) external onlyOwner {
+        if (seconds_ == 0) revert DelayZero();
         globalDelaySeconds = seconds_;
         emit GlobalDelaySet(seconds_);
     }

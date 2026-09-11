@@ -832,6 +832,9 @@ contract VerifyActivationTest is Test {
     //     invariant maps to its specific revert reason, checked in gate order. ───
 
     function testFuzz_verify_gate_and_reason(uint32 globalDelay, bool sameAdmin) public {
+        // A zero length can no longer be set; the never-set case is pinned by
+        // test_verify_reverts_when_global_delay_zero_even_with_zero_floor.
+        globalDelay = uint32(bound(globalDelay, 1, type(uint32).max));
         address ctrlAdmin = sameAdmin ? GUARDIAN : OTHER_ADMIN;
         _configController(ctrlAdmin, globalDelay);
         _handToGovernance(); // ownership + wiring always correct here
@@ -842,13 +845,6 @@ contract VerifyActivationTest is Test {
             vm.expectRevert(
                 bytes(
                     "single guardian violated: controller.admin() != queue.admin() -- single guardian violated"
-                )
-            );
-            _verify();
-        } else if (globalDelay == 0) {
-            vm.expectRevert(
-                bytes(
-                    "delay unconfigured: controller.globalDelaySeconds()==0 -- run step 4 (setGlobalDelaySeconds) first"
                 )
             );
             _verify();

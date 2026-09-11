@@ -664,8 +664,8 @@ contract ExitFeeControllerTest is Test {
         // The post-256 slots are the ones an upgrade regression would hit
         // first: admin alone in its slot, then the packed perimeter pair.
         controller.setAdmin(GUARDIAN);
-        controller.setSecurityPerimeterEnabled(true);
         controller.setGlobalDelaySeconds(7 days);
+        controller.setSecurityPerimeterEnabled(true);
         vm.stopPrank();
 
         ExitFeeControllerV2Mock v2impl = new ExitFeeControllerV2Mock();
@@ -954,6 +954,8 @@ contract ExitFeeControllerTest is Test {
 
     function test_kill_switch_emits() public {
         vm.prank(ADMIN);
+        controller.setGlobalDelaySeconds(DELAY);
+        vm.prank(ADMIN);
         vm.expectEmit(false, false, false, true);
         emit SecurityPerimeterEnabledSet(true);
         controller.setSecurityPerimeterEnabled(true);
@@ -995,12 +997,29 @@ contract ExitFeeControllerTest is Test {
         assertEq(d2, type(uint32).max, "~136y head-room passes through");
     }
 
-    function test_globalDelay_zero_is_global_bypass() public {
-        // globalDelaySeconds == 0 with perimeter ON ⇒ d == 0 for every
-        // non-forced exit (equivalent to a global bypass; the queue skips it).
-        _enableDelay(0);
-        (uint32 d,,) = controller.quoteExitDelayFor(ACTOR, OTHER, USER_EOA, SURFACE, IXUSD);
-        assertEq(d, 0);
+    function test_globalDelay_zero_reverts() public {
+        // A zero length is not a way to switch the delay off: it would leave
+        // the enabled flag reading true while every exit paid out immediately.
+        vm.prank(ADMIN);
+        vm.expectRevert(ExitFeeController.DelayZero.selector);
+        controller.setGlobalDelaySeconds(0);
+    }
+
+    function test_enable_reverts_while_delay_unset() public {
+        vm.prank(ADMIN);
+        vm.expectRevert(ExitFeeController.DelayUnset.selector);
+        controller.setSecurityPerimeterEnabled(true);
+        assertFalse(controller.securityPerimeterEnabled());
+    }
+
+    function test_enable_after_delay_set_succeeds_and_disable_is_never_blocked() public {
+        vm.startPrank(ADMIN);
+        controller.setGlobalDelaySeconds(DELAY);
+        controller.setSecurityPerimeterEnabled(true);
+        assertTrue(controller.securityPerimeterEnabled());
+        controller.setSecurityPerimeterEnabled(false);
+        assertFalse(controller.securityPerimeterEnabled());
+        vm.stopPrank();
     }
 
     function test_globalDelay_only_owner() public {
@@ -1199,8 +1218,10 @@ contract ExitFeeControllerTest is Test {
         // kill switch (safe default: only Owner until a guardian is appointed);
         // a stranger (and address(0) callers can't exist) cannot.
         assertEq(controller.admin(), address(0));
-        vm.prank(ADMIN);
+        vm.startPrank(ADMIN);
+        controller.setGlobalDelaySeconds(DELAY);
         controller.setSecurityPerimeterEnabled(true);
+        vm.stopPrank();
         assertTrue(controller.securityPerimeterEnabled());
     }
 
@@ -1299,6 +1320,7 @@ contract ExitFeeControllerTest is Test {
     ///      quoteExitDelay returns EXACTLY globalDelaySeconds for any actor and
     ///      any (non-zero-or-zero) subProduct — the "default delayed" rule.
     function testFuzz_default_delay_equals_global(uint32 d, address actor, address sub) public {
+        d = uint32(bound(d, 1, type(uint32).max));
         _enableDelay(d);
         assertEq(controller.quoteExitDelay(SURFACE, sub, actor), d);
     }
@@ -1353,6 +1375,7 @@ contract ExitFeeControllerTest is Test {
     ///      the actor (so effOrig == rawOriginator).
     function testFuzz_outer_inner_agree(uint32 d, address actor, address sub) public {
         vm.assume(actor != WRAPPER); // no passthrough registered anyway
+        d = uint32(bound(d, 1, type(uint32).max));
         _enableDelay(d);
         (uint32 outer,,) = controller.quoteExitDelayFor(actor, actor, actor, SURFACE, sub);
         uint32 inner = controller.quoteExitDelay(SURFACE, sub, actor);

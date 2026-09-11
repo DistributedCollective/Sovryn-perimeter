@@ -376,6 +376,7 @@ contract BlockExitsTest is Test {
 
     function test_disable_perimeter_previews_when_enabled() public {
         ExitFeeController ctrl = _deployController();
+        ctrl.setGlobalDelaySeconds(1 days);
         ctrl.setSecurityPerimeterEnabled(true);
         script.initController(address(ctrl));
         // preview only - the on-chain state must be untouched afterwards
