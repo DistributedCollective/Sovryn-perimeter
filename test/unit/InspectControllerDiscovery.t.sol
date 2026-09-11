@@ -42,9 +42,15 @@ contract InspectHarness is InspectController {
         return _resolutionSubProducts(keys);
     }
 
-    function printRows(ExitFeeController c, string memory surfaceName) external view {
-        _printSurface(c, surfaceName);
-        _printDelayBypassRegistry(c);
+    /// @dev Runs the real dump printers and returns the stored-row lines they
+    ///      printed, fee side and delay side.
+    function printRows(ExitFeeController c, string memory surfaceName)
+        external
+        view
+        returns (string[] memory feeRows, string[] memory delayRows)
+    {
+        feeRows = _printSurface(c, surfaceName);
+        delayRows = _printDelayBypassRegistry(c);
     }
 }
 
@@ -213,10 +219,20 @@ contract InspectControllerDiscoveryTest is Test {
         );
     }
 
+    /// @dev Compares printed rows line by line, then the row count.
+    function _assertRows(string[] memory got, string[] memory want) internal pure {
+        uint256 common = got.length < want.length ? got.length : want.length;
+        for (uint256 i = 0; i < common; i++) {
+            assertEq(got[i], want[i], string.concat("printed row ", vm.toString(i)));
+        }
+        assertEq(got.length, want.length, "printed row count");
+    }
+
     /// @dev The dump path itself prints the resolved lines for every stored row
-    ///      on both sides. The actor here is inactive on both sides: at no
-    ///      sub-product it pays 10 bps and is held, at the stored sub-product it
-    ///      is exempt from both, and the dump prints both lines.
+    ///      on both sides, and every printed line is checked. The actor here is
+    ///      inactive on both sides: at no sub-product it pays 10 bps and is held,
+    ///      at the stored sub-product it is exempt from both, and the dump prints
+    ///      both lines. An actor row that resolves at fewer sub-products fails.
     function test_dump_prints_resolved_rows_on_both_sides() public {
         vm.startPrank(OWNER);
         controller.setFeeReceiver(VAULT);
@@ -230,23 +246,32 @@ contract InspectControllerDiscoveryTest is Test {
         controller.setActorBypass(NAMED, ACTOR, IExitFeeController.DelayBypassPolicy({active: false, bypass: false}));
         vm.stopPrank();
 
-        harness.printRows(controller, "PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW");
+        (string[] memory feeRows, string[] memory delayRows) =
+            harness.printRows(controller, "PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW");
 
-        assertEq(
-            harness.resolvedFee(controller, NAMED, address(0), ACTOR),
-            "resolves 10 bps, fee 1000000000000000 on sample gross 1e18 for sub-product none"
+        string[] memory fee = new string[](7);
+        fee[0] = "  sub-products:";
+        fee[1] = string.concat("    ", vm.toString(SUB), "  (active=true, rateBps=0)");
+        fee[2] = string.concat(
+            "      resolves exempt (0 bps) on sample gross 1e18 for sub-product ",
+            vm.toString(SUB),
+            ", actor without an entry"
         );
-        assertEq(
-            harness.resolvedFee(controller, NAMED, SUB, ACTOR),
-            string.concat("resolves exempt (0 bps) on sample gross 1e18 for sub-product ", vm.toString(SUB))
+        fee[3] = "  actors:";
+        fee[4] = string.concat("    ", vm.toString(ACTOR), "  (active=false, rateBps=25)");
+        fee[5] = "      resolves 10 bps, fee 1000000000000000 on sample gross 1e18 for sub-product none";
+        fee[6] = string.concat("      resolves exempt (0 bps) on sample gross 1e18 for sub-product ", vm.toString(SUB));
+        _assertRows(feeRows, fee);
+
+        string[] memory delay = new string[](5);
+        delay[0] = string.concat("    sub-product ", vm.toString(SUB), "  (active=true, bypass=true)");
+        delay[1] = string.concat(
+            "      resolves exempt (0s) for sub-product ", vm.toString(SUB), ", actor without an entry"
         );
-        assertEq(
-            harness.resolvedDelay(controller, NAMED, address(0), ACTOR), "resolves delayed 3600s for sub-product none"
-        );
-        assertEq(
-            harness.resolvedDelay(controller, NAMED, SUB, ACTOR),
-            string.concat("resolves exempt (0s) for sub-product ", vm.toString(SUB))
-        );
+        delay[2] = string.concat("    actor       ", vm.toString(ACTOR), "  (active=false, bypass=false)");
+        delay[3] = "      resolves delayed 3600s for sub-product none";
+        delay[4] = string.concat("      resolves exempt (0s) for sub-product ", vm.toString(SUB));
+        _assertRows(delayRows, delay);
     }
 
     /// @dev An actor row resolves at no sub-product and at every stored one, so

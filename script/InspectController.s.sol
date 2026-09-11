@@ -189,50 +189,95 @@ contract InspectController is Script {
         return string.concat("reason ", vm.toString(uint256(reason)));
     }
 
-    function _printFeeSubProductRows(ExitFeeController c, bytes32 id, address[] memory subs) internal view {
-        if (subs.length == 0) return;
-        console2.log("  sub-products:");
-        for (uint256 j = 0; j < subs.length; j++) {
-            IExitFeeController.RatePolicy memory p = c.subProductPolicy(id, subs[j]);
-            console2.log(string.concat("    ", vm.toString(subs[j]), "  ", _fmtPolicy(p)));
-            console2.log(string.concat("      ", _resolvedFee(c, id, subs[j], address(0))));
+    /// @dev Logs `line` and records it at `rows[n]`, so a row printer returns
+    ///      exactly the lines it printed. Returns the next free index.
+    function _emitRow(string[] memory rows, uint256 n, string memory line) internal pure returns (uint256) {
+        console2.log(line);
+        rows[n] = line;
+        return n + 1;
+    }
+
+    /// @dev `a` followed by `b`.
+    function _concatRows(string[] memory a, string[] memory b) internal pure returns (string[] memory out) {
+        out = new string[](a.length + b.length);
+        for (uint256 i = 0; i < a.length; i++) {
+            out[i] = a[i];
+        }
+        for (uint256 i = 0; i < b.length; i++) {
+            out[a.length + i] = b[i];
         }
     }
 
+    /// @dev Prints each stored fee sub-product row with the fee it resolves to.
+    ///      Returns the printed lines.
+    function _printFeeSubProductRows(ExitFeeController c, bytes32 id, address[] memory subs)
+        internal
+        view
+        returns (string[] memory rows)
+    {
+        if (subs.length == 0) return rows;
+        rows = new string[](1 + 2 * subs.length);
+        uint256 n = _emitRow(rows, 0, "  sub-products:");
+        for (uint256 j = 0; j < subs.length; j++) {
+            IExitFeeController.RatePolicy memory p = c.subProductPolicy(id, subs[j]);
+            n = _emitRow(rows, n, string.concat("    ", vm.toString(subs[j]), "  ", _fmtPolicy(p)));
+            n = _emitRow(rows, n, string.concat("      ", _resolvedFee(c, id, subs[j], address(0))));
+        }
+    }
+
+    /// @dev Prints each stored fee actor row with the fee it resolves to at no
+    ///      sub-product and at every stored sub-product. Returns the printed
+    ///      lines.
     function _printFeeActorRows(ExitFeeController c, bytes32 id, address[] memory actors, address[] memory subs)
         internal
         view
+        returns (string[] memory rows)
     {
-        if (actors.length == 0) return;
-        console2.log("  actors:");
+        if (actors.length == 0) return rows;
         address[] memory at = _resolutionSubProducts(subs);
+        rows = new string[](1 + actors.length * (1 + at.length));
+        uint256 n = _emitRow(rows, 0, "  actors:");
         for (uint256 j = 0; j < actors.length; j++) {
             IExitFeeController.RatePolicy memory p = c.actorPolicy(id, actors[j]);
-            console2.log(string.concat("    ", vm.toString(actors[j]), "  ", _fmtPolicy(p)));
+            n = _emitRow(rows, n, string.concat("    ", vm.toString(actors[j]), "  ", _fmtPolicy(p)));
             for (uint256 k = 0; k < at.length; k++) {
-                console2.log(string.concat("      ", _resolvedFee(c, id, at[k], actors[j])));
+                n = _emitRow(rows, n, string.concat("      ", _resolvedFee(c, id, at[k], actors[j])));
             }
         }
     }
 
-    function _printDelaySubProductRows(ExitFeeController c, bytes32 id, address[] memory subs) internal view {
+    /// @dev Prints each stored delay sub-product row with the delay it resolves
+    ///      to. Returns the printed lines.
+    function _printDelaySubProductRows(ExitFeeController c, bytes32 id, address[] memory subs)
+        internal
+        view
+        returns (string[] memory rows)
+    {
+        rows = new string[](2 * subs.length);
+        uint256 n;
         for (uint256 j = 0; j < subs.length; j++) {
             IExitFeeController.DelayBypassPolicy memory p = c.subProductBypass(id, subs[j]);
-            console2.log(string.concat("    sub-product ", vm.toString(subs[j]), "  ", _fmtBypass(p)));
-            console2.log(string.concat("      ", _resolvedDelay(c, id, subs[j], address(0))));
+            n = _emitRow(rows, n, string.concat("    sub-product ", vm.toString(subs[j]), "  ", _fmtBypass(p)));
+            n = _emitRow(rows, n, string.concat("      ", _resolvedDelay(c, id, subs[j], address(0))));
         }
     }
 
+    /// @dev Prints each stored delay actor row with the delay it resolves to at
+    ///      no sub-product and at every stored sub-product. Returns the printed
+    ///      lines.
     function _printDelayActorRows(ExitFeeController c, bytes32 id, address[] memory actors, address[] memory subs)
         internal
         view
+        returns (string[] memory rows)
     {
         address[] memory at = _resolutionSubProducts(subs);
+        rows = new string[](actors.length * (1 + at.length));
+        uint256 n;
         for (uint256 j = 0; j < actors.length; j++) {
             IExitFeeController.DelayBypassPolicy memory p = c.actorBypass(id, actors[j]);
-            console2.log(string.concat("    actor       ", vm.toString(actors[j]), "  ", _fmtBypass(p)));
+            n = _emitRow(rows, n, string.concat("    actor       ", vm.toString(actors[j]), "  ", _fmtBypass(p)));
             for (uint256 k = 0; k < at.length; k++) {
-                console2.log(string.concat("      ", _resolvedDelay(c, id, at[k], actors[j])));
+                n = _emitRow(rows, n, string.concat("      ", _resolvedDelay(c, id, at[k], actors[j])));
             }
         }
     }
@@ -329,7 +374,9 @@ contract InspectController is Script {
     ///      named surfaces) so a sub-product- or
     ///      actor-only bypass under an arbitrary surfaceId is never missed. A probed
     ///      surfaceId with no live bypass entry at any tier prints nothing.
-    function _printDelayBypassRegistry(ExitFeeController c) internal view {
+    ///      Returns the stored-row lines it printed: every sub-product and actor
+    ///      row with its resolved lines, in print order.
+    function _printDelayBypassRegistry(ExitFeeController c) internal view returns (string[] memory rows) {
         console2.log(unicode"── Delay-bypass registry (enumerated) ────────────────");
         bytes32[] memory ids = _probeSurfaceIds(c);
         bool anyPrinted = false;
@@ -353,8 +400,10 @@ contract InspectController is Script {
 
             console2.log(string.concat("  surface ", _labelFor(id), "  ", _fmtBypass(sb)));
             // Beside each stored row, the delay that resolves for that address.
-            _printDelaySubProductRows(c, id, subBp);
-            _printDelayActorRows(c, id, actorBp, subBp);
+            // Sub-product rows print before actor rows.
+            string[] memory subRows = _printDelaySubProductRows(c, id, subBp);
+            string[] memory actorRows = _printDelayActorRows(c, id, actorBp, subBp);
+            rows = _concatRows(rows, _concatRows(subRows, actorRows));
         }
         if (!anyPrinted) {
             console2.log("  (no delay bypasses configured at any tier)");
@@ -364,7 +413,10 @@ contract InspectController is Script {
 
 
 
-    function _printSurface(ExitFeeController c, string memory name) internal view {
+    /// @dev Prints one named surface: its id, its policy, and every stored
+    ///      sub-product and actor row with the fee each resolves to. Returns the
+    ///      stored-row lines it printed, sub-product rows first.
+    function _printSurface(ExitFeeController c, string memory name) internal view returns (string[] memory rows) {
         bytes32 id = keccak256(bytes(name));
 
         console2.log(name);
@@ -374,9 +426,11 @@ contract InspectController is Script {
         console2.log(string.concat("  policy: ", _fmtPolicy(sp)));
 
         // Beside each stored row, the fee that resolves for that address.
+        // Sub-product rows print before actor rows.
         address[] memory subs = c.subProductKeys(id);
-        _printFeeSubProductRows(c, id, subs);
-        _printFeeActorRows(c, id, c.actorKeys(id), subs);
+        string[] memory subRows = _printFeeSubProductRows(c, id, subs);
+        string[] memory actorRows = _printFeeActorRows(c, id, c.actorKeys(id), subs);
+        rows = _concatRows(subRows, actorRows);
         // NOTE: delay-bypass tiers are dumped separately in
         // `_printDelayBypassRegistry`, driven by the ANY-TIER-TOUCHED master set
         // `bypassSurfaceIds()` ∪ the named surfaces (NOT this hardcoded surface
