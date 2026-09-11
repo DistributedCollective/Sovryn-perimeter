@@ -228,8 +228,10 @@ interface IExitDelayQueue {
     ///         narrower than delivery on purpose: delivery pays only the recorded
     ///         receiver, while this call names a destination, so opening it the
     ///         same way would let anyone take a contract-owned request whose
-    ///         receiver refuses payment. The receiver is NEVER a caller. Requires
-    ///         the request Queued, unlocked, and the queue not paused.
+    ///         receiver refuses payment. Being the recorded receiver grants no
+    ///         right to deliver or redirect: the receiver may call only when it
+    ///         is also the originator or the owner, as in a withdrawal to self.
+    ///         Requires the request Queued, unlocked, and the queue not paused.
     ///
     ///         Attempts the STORED-receiver payout FIRST; pays `altReceiver` ONLY if
     ///         the stored-receiver payout genuinely bounces — so a HEALTHY exit is

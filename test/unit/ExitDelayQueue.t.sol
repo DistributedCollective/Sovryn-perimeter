@@ -1882,7 +1882,7 @@ contract ExitDelayQueueTest is Test {
     }
 
     /// @notice (f) caller not in {originator, owner} → reverts NotExecutor. The
-    ///         receiver may NOT recover (authorization matches executeExit).
+    ///         receiver may NOT recover, and neither may an outsider.
     function test_recover_reverts_if_caller_not_executor() public {
         _queueErc20(10 ether);
         vm.warp(block.timestamp + DELAY);
@@ -1894,6 +1894,34 @@ contract ExitDelayQueueTest is Test {
         vm.prank(OUTSIDER);
         vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, OUTSIDER));
         queue.recoverStuckExit(1, ALT);
+    }
+
+    /// @notice Being the recorded receiver grants no right to recover. An address
+    ///         that is only the receiver is refused; an address that is the
+    ///         receiver and also the originator and owner (a withdrawal to self),
+    ///         or the receiver and also the owner, recovers as that party.
+    function test_recover_receiver_calls_only_as_originator_or_owner() public {
+        address self = address(0x5E1F);
+        uint256 toOther = _queueErc20With(10 ether, ORIG, OWNR, RCVR);
+        uint256 toSelf = _queueErc20With(10 ether, self, self, self);
+        uint256 toOwner = _queueErc20With(10 ether, ORIG, OWNR, OWNR);
+        vm.warp(block.timestamp + DELAY);
+
+        vm.prank(RCVR);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, RCVR));
+        queue.recoverStuckExit(toOther, ALT);
+
+        uint256 selfBefore = token.balanceOf(self);
+        vm.prank(self);
+        queue.recoverStuckExit(toSelf, ALT);
+        assertEq(token.balanceOf(self), selfBefore + 10 ether, "withdrawal to self: recovered and paid to self");
+        assertEq(uint256(queue.getRequest(toSelf).status), uint256(IExitDelayQueue.ExitStatus.Executed));
+
+        uint256 ownerBefore = token.balanceOf(OWNR);
+        vm.prank(OWNR);
+        queue.recoverStuckExit(toOwner, ALT);
+        assertEq(token.balanceOf(OWNR), ownerBefore + 10 ether, "receiver that is also the owner recovers");
+        assertEq(token.balanceOf(ALT), 0, "healthy receivers paid; the alternate untouched");
     }
 
     /// @notice recoverStuckExit still enforces the unlock gate.
