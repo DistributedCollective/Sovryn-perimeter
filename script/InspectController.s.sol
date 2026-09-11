@@ -17,7 +17,8 @@ import {ExitDelayQueue} from "../src/ExitDelayQueue.sol";
 ///         row, on both the fee and the delay side, it prints the value that
 ///         actually resolves for that address, labelled with the sub-product
 ///         used, so an entry written inactive that is still exempt through a
-///         broader tier reads as exempt.
+///         broader tier reads as exempt. While the delay is switched off, each
+///         delay row also shows what it would resolve to once switched on.
 ///
 /// @dev Usage:
 ///
@@ -26,7 +27,10 @@ import {ExitDelayQueue} from "../src/ExitDelayQueue.sol";
 ///
 /// Reads `deployments/<chainId>/ExitFeeController.json` to find the proxy
 /// address (committed for mainnet/testnet, gitignored for local anvil).
-/// No broadcast: this is a read-only inspector.
+/// It never broadcasts and produces no transaction. The only state it writes is
+/// in this run's local simulation: for the "would resolve once switched on"
+/// lines it writes the controller's delay switch and length word with
+/// `vm.store`, quotes, and writes the original word back.
 contract InspectController is Script {
     using stdJson for string;
 
@@ -46,7 +50,7 @@ contract InspectController is Script {
     bytes32 internal constant EIP1967_IMPL_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
-    function run(uint256 chainId) external view {
+    function run(uint256 chainId) external {
         string memory artifact =
             vm.readFile(string.concat("deployments/", vm.toString(chainId), "/ExitFeeController.json"));
         address proxy = artifact.readAddress(".proxyAddress");
@@ -150,18 +154,59 @@ contract InspectController is Script {
     /// @dev What `quoteExitDelay` returns for this address, in words. A zero
     ///      reads as exempt only while the delay is switched on with a length
     ///      set; a switched-off delay and an unset length are named as such.
+    ///      While the delay is switched off every row reads 0s, so the line also
+    ///      says what the row would resolve to once switched on.
     function _resolvedDelay(ExitFeeController c, bytes32 id, address sub, address actor)
         internal
-        view
         returns (string memory)
     {
         uint32 d = c.quoteExitDelay(id, sub, actor);
+        bool switchedOn = c.securityPerimeterEnabled();
         string memory value;
         if (d != 0) value = string.concat("delayed ", vm.toString(uint256(d)), "s");
-        else if (!c.securityPerimeterEnabled()) value = "0s (delay switched off)";
+        else if (!switchedOn) value = "0s (delay switched off)";
         else if (c.globalDelaySeconds() == 0) value = "0s (length unset - nothing held)";
         else value = "exempt (0s)";
-        return string.concat("resolves ", value, " for ", _resolutionLabel(sub, actor));
+        string memory line = string.concat("resolves ", value, " for ", _resolutionLabel(sub, actor));
+        if (switchedOn) return line;
+        return string.concat(line, "; would resolve once switched on: ", _delayOnceSwitchedOn(c, id, sub, actor));
+    }
+
+    /// @dev Storage slot holding the controller's delay switch (lowest byte) and
+    ///      delay length (the next four bytes), packed.
+    uint256 internal constant DELAY_SWITCH_SLOT = 271;
+
+    /// @dev Length written into the simulation while the real length is unset.
+    ///      Any non-zero length separates held from exempt; this number is never
+    ///      printed.
+    uint32 internal constant PLACEHOLDER_DELAY_LENGTH = 1;
+
+    /// @dev What `quoteExitDelay` would return for this address once the delay
+    ///      is switched on, in words. Local simulation only, never broadcast:
+    ///      writes the switch on (and the placeholder length when the length is
+    ///      unset) into this run's copy of the controller's storage with
+    ///      `vm.store`, quotes, then writes the original word back. The quote is
+    ///      used only when both getters read back the written values; otherwise
+    ///      the line says it could not simulate rather than reporting a value.
+    function _delayOnceSwitchedOn(ExitFeeController c, bytes32 id, address sub, address actor)
+        internal
+        returns (string memory)
+    {
+        uint32 length = c.globalDelaySeconds();
+        uint32 simulated = length == 0 ? PLACEHOLDER_DELAY_LENGTH : length;
+        bytes32 slot = bytes32(DELAY_SWITCH_SLOT);
+        bytes32 saved = vm.load(address(c), slot);
+        // Replace the switch byte and the four length bytes; keep the rest of the word.
+        uint256 patched = (uint256(saved) & ~uint256(0xFFFFFFFFFF)) | (uint256(simulated) << 8) | 1;
+        vm.store(address(c), slot, bytes32(patched));
+        bool readBack = c.securityPerimeterEnabled() && c.globalDelaySeconds() == simulated;
+        uint32 d = readBack ? c.quoteExitDelay(id, sub, actor) : 0;
+        vm.store(address(c), slot, saved);
+
+        if (!readBack) return "NOT SIMULATED - the switch and length are not at the storage slot this inspector writes";
+        if (d == 0) return "exempt (0s)";
+        if (length == 0) return "held (length unset - the Owner sets it before switching on)";
+        return string.concat("delayed ", vm.toString(uint256(d)), "s");
     }
 
     /// @dev What `quoteExitFee` returns for this address on SAMPLE_GROSS, in
@@ -250,7 +295,6 @@ contract InspectController is Script {
     ///      to. Returns the printed lines.
     function _printDelaySubProductRows(ExitFeeController c, bytes32 id, address[] memory subs)
         internal
-        view
         returns (string[] memory rows)
     {
         rows = new string[](2 * subs.length);
@@ -267,7 +311,6 @@ contract InspectController is Script {
     ///      lines.
     function _printDelayActorRows(ExitFeeController c, bytes32 id, address[] memory actors, address[] memory subs)
         internal
-        view
         returns (string[] memory rows)
     {
         address[] memory at = _resolutionSubProducts(subs);
@@ -376,7 +419,7 @@ contract InspectController is Script {
     ///      surfaceId with no live bypass entry at any tier prints nothing.
     ///      Returns the stored-row lines it printed: every sub-product and actor
     ///      row with its resolved lines, in print order.
-    function _printDelayBypassRegistry(ExitFeeController c) internal view returns (string[] memory rows) {
+    function _printDelayBypassRegistry(ExitFeeController c) internal returns (string[] memory rows) {
         console2.log(unicode"── Delay-bypass registry (enumerated) ────────────────");
         bytes32[] memory ids = _probeSurfaceIds(c);
         bool anyPrinted = false;

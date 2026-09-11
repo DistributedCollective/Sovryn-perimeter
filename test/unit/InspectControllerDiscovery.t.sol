@@ -24,7 +24,6 @@ contract InspectHarness is InspectController {
 
     function resolvedDelay(ExitFeeController c, bytes32 id, address sub, address actor)
         external
-        view
         returns (string memory)
     {
         return _resolvedDelay(c, id, sub, actor);
@@ -46,11 +45,22 @@ contract InspectHarness is InspectController {
     ///      printed, fee side and delay side.
     function printRows(ExitFeeController c, string memory surfaceName)
         external
-        view
         returns (string[] memory feeRows, string[] memory delayRows)
     {
         feeRows = _printSurface(c, surfaceName);
         delayRows = _printDelayBypassRegistry(c);
+    }
+}
+
+/// @dev Controller stand-in that keeps its delay switch and length at slot 0,
+///      not where the controller keeps them, and quotes the length only while
+///      the switch reads on.
+contract SwitchElsewhere {
+    bool public securityPerimeterEnabled;
+    uint32 public globalDelaySeconds = 3600;
+
+    function quoteExitDelay(bytes32, address, address) external view returns (uint32) {
+        return securityPerimeterEnabled ? globalDelaySeconds : 0;
     }
 }
 
@@ -151,6 +161,78 @@ contract InspectControllerDiscoveryTest is Test {
         );
     }
 
+    /// @dev The controller keeps the delay switch (lowest byte) and length (next
+    ///      four bytes) packed in this slot.
+    bytes32 constant DELAY_SWITCH_SLOT = bytes32(uint256(271));
+
+    /// @dev While the delay is switched off every row reads 0s now, so each row
+    ///      also shows what it would resolve to once switched on: an inactive
+    ///      actor entry still exempt through the surface reads exempt, a held
+    ///      row names the length. The simulation leaves the controller's state
+    ///      as it found it.
+    function test_resolved_delay_shows_what_a_switched_off_row_would_resolve_once_switched_on() public {
+        vm.startPrank(OWNER);
+        controller.setGlobalDelaySeconds(1 hours);
+        controller.setSurfaceBypass(NAMED, IExitFeeController.DelayBypassPolicy({active: true, bypass: true}));
+        controller.setActorBypass(NAMED, ACTOR, IExitFeeController.DelayBypassPolicy({active: false, bypass: false}));
+        controller.setSubProductBypass(NAMED, SUB, IExitFeeController.DelayBypassPolicy({active: true, bypass: false}));
+        vm.stopPrank();
+        bytes32 before = vm.load(address(controller), DELAY_SWITCH_SLOT);
+
+        assertEq(
+            harness.resolvedDelay(controller, NAMED, address(0), ACTOR),
+            "resolves 0s (delay switched off) for sub-product none; would resolve once switched on: exempt (0s)"
+        );
+        assertEq(
+            harness.resolvedDelay(controller, NAMED, SUB, ACTOR),
+            string.concat(
+                "resolves 0s (delay switched off) for sub-product ",
+                vm.toString(SUB),
+                "; would resolve once switched on: delayed 3600s"
+            )
+        );
+
+        assertEq(vm.load(address(controller), DELAY_SWITCH_SLOT), before, "switch and length written back");
+        assertFalse(controller.securityPerimeterEnabled(), "switch still off");
+        assertEq(controller.globalDelaySeconds(), 1 hours, "length unchanged");
+    }
+
+    /// @dev Switched off with the length unset: a row that would be held says so
+    ///      without printing the placeholder length, an exempt row reads exempt,
+    ///      and the length stays unset.
+    function test_resolved_delay_once_switched_on_names_a_hold_while_the_length_is_unset() public {
+        vm.prank(OWNER);
+        controller.setSurfaceBypass(NAMED, IExitFeeController.DelayBypassPolicy({active: true, bypass: true}));
+        bytes32 before = vm.load(address(controller), DELAY_SWITCH_SLOT);
+
+        assertEq(
+            harness.resolvedDelay(controller, NAMED, address(0), ACTOR),
+            "resolves 0s (delay switched off) for sub-product none; would resolve once switched on: exempt (0s)"
+        );
+        assertEq(
+            harness.resolvedDelay(controller, ARB_ACTOR, address(0), ACTOR),
+            "resolves 0s (delay switched off) for sub-product none; would resolve once switched on: held (length unset - the Owner sets it before switching on)"
+        );
+
+        assertEq(vm.load(address(controller), DELAY_SWITCH_SLOT), before, "switch and length written back");
+        assertEq(controller.globalDelaySeconds(), 0, "length still unset");
+    }
+
+    /// @dev When the switch does not read back as written, the inspector says it
+    ///      could not simulate instead of reporting a value, and writes the slot
+    ///      back.
+    function test_resolved_delay_refuses_to_simulate_when_the_switch_lives_elsewhere() public {
+        SwitchElsewhere elsewhere = new SwitchElsewhere();
+
+        assertEq(
+            harness.resolvedDelay(ExitFeeController(address(elsewhere)), NAMED, address(0), ACTOR),
+            "resolves 0s (delay switched off) for sub-product none; would resolve once switched on: NOT SIMULATED - the switch and length are not at the storage slot this inspector writes"
+        );
+
+        assertEq(vm.load(address(elsewhere), DELAY_SWITCH_SLOT), bytes32(0), "slot written back");
+        assertFalse(elsewhere.securityPerimeterEnabled(), "stand-in switch untouched");
+    }
+
     /// @dev A held withdrawal names its length; a switched-off delay is not
     ///      reported as an exemption.
     function test_resolved_delay_names_a_hold_and_the_switched_off_state() public {
@@ -158,7 +240,7 @@ contract InspectControllerDiscoveryTest is Test {
         controller.setActorBypass(NAMED, ACTOR, IExitFeeController.DelayBypassPolicy({active: false, bypass: true}));
         assertEq(
             harness.resolvedDelay(controller, NAMED, address(0), ACTOR),
-            "resolves 0s (delay switched off) for sub-product none"
+            "resolves 0s (delay switched off) for sub-product none; would resolve once switched on: held (length unset - the Owner sets it before switching on)"
         );
 
         vm.startPrank(OWNER);
@@ -272,6 +354,40 @@ contract InspectControllerDiscoveryTest is Test {
         delay[3] = "      resolves delayed 3600s for sub-product none";
         delay[4] = string.concat("      resolves exempt (0s) for sub-product ", vm.toString(SUB));
         _assertRows(delayRows, delay);
+    }
+
+    /// @dev The dump path with the delay switched off, which is when exemptions
+    ///      are reviewed: every delay row reads 0s now and also prints what it
+    ///      would resolve to once switched on. The actor's entry is inactive and
+    ///      the dump shows it still exempt through the surface at no
+    ///      sub-product, and held at the stored sub-product.
+    function test_dump_prints_what_each_delay_row_would_resolve_once_switched_on() public {
+        vm.startPrank(OWNER);
+        controller.setGlobalDelaySeconds(1 hours);
+        controller.setSurfaceBypass(NAMED, IExitFeeController.DelayBypassPolicy({active: true, bypass: true}));
+        controller.setActorBypass(NAMED, ACTOR, IExitFeeController.DelayBypassPolicy({active: false, bypass: false}));
+        controller.setSubProductBypass(NAMED, SUB, IExitFeeController.DelayBypassPolicy({active: true, bypass: false}));
+        vm.stopPrank();
+
+        (, string[] memory delayRows) = harness.printRows(controller, "PERIMETER_SURFACE_LENDING_LENDER_WITHDRAW");
+
+        string[] memory delay = new string[](5);
+        delay[0] = string.concat("    sub-product ", vm.toString(SUB), "  (active=true, bypass=false)");
+        delay[1] = string.concat(
+            "      resolves 0s (delay switched off) for sub-product ",
+            vm.toString(SUB),
+            ", actor without an entry; would resolve once switched on: delayed 3600s"
+        );
+        delay[2] = string.concat("    actor       ", vm.toString(ACTOR), "  (active=false, bypass=false)");
+        delay[3] =
+            "      resolves 0s (delay switched off) for sub-product none; would resolve once switched on: exempt (0s)";
+        delay[4] = string.concat(
+            "      resolves 0s (delay switched off) for sub-product ",
+            vm.toString(SUB),
+            "; would resolve once switched on: delayed 3600s"
+        );
+        _assertRows(delayRows, delay);
+        assertFalse(controller.securityPerimeterEnabled(), "switch still off after the dump");
     }
 
     /// @dev An actor row resolves at no sub-product and at every stored one, so
