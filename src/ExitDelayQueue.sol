@@ -154,7 +154,18 @@ contract ExitDelayQueue is
     ///         nativePusher + securityPerimeterPaused.
     uint32 public minimumDelaySeconds;
 
-    /// @notice Pauses executeExit(s) ONLY; ingress + recovery stay live.
+    /// @notice While true, the queue pays nobody through the user-facing legs:
+    ///         `executeExit`, `executeExits` and `recoverStuckExit` revert
+    ///         `QueuePaused` for every caller — originator, owner, and anyone
+    ///         delivering a contract-owned request. Users therefore have no path
+    ///         of their own while it holds.
+    ///         What stays live: ingress (the four `record*` functions and
+    ///         `receive`), so withdrawals keep escrowing; the block levers; the
+    ///         Admin-or-Owner `resolveToProtocol`, which still needs a
+    ///         blacklisted originator or owner and a matching active route; and
+    ///         the Owner's `resolveBySIP`, for which a pause makes EVERY queued
+    ///         request eligible, unlocked and unblocked ones included. Owner
+    ///         configuration and `sweepSurplus` are unaffected.
     ///         Packs with nativePusher (address) + minimumDelaySeconds (uint32).
     bool public securityPerimeterPaused;
 

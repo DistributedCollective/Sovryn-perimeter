@@ -299,6 +299,17 @@ interface IExitDelayQueue {
 
     // ─── Pause ───────────────────────────────────────────────────
 
+    /// @notice Pause or resume the queue. Admin or Owner.
+    ///         A pause stops `executeExit`, `executeExits` and `recoverStuckExit`
+    ///         for every caller — the originator, the owner, and anyone
+    ///         delivering a contract-owned request — so while it holds users have
+    ///         no path of their own to their money.
+    ///         It does not stop ingress: the four `record*` functions keep
+    ///         escrowing new withdrawals. It does not stop the block levers, the
+    ///         Admin-or-Owner `resolveToProtocol` (still bound to a blacklisted
+    ///         originator or owner and a matching active route), or the Owner's
+    ///         `resolveBySIP` — and while paused every queued request, unlocked
+    ///         and unblocked ones included, is eligible for `resolveBySIP`.
     function setSecurityPerimeterPaused(bool p) external;
 
     // ─── Recovery ────────────────────────────────────────────────

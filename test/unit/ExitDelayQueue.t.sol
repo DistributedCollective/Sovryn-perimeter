@@ -2790,6 +2790,57 @@ contract ExitDelayQueueTest is Test {
         assertTrue(queue.topUpFeasible(SURFACE_ZERO));
     }
 
+    // ─── What a pause stops and what it leaves live ──
+
+    /// @notice A pause stops every user-facing leg for every caller, so users
+    ///         have no path of their own. Ingress, the block levers, the route
+    ///         leg and the Owner's catch-all stay live, and the catch-all admits
+    ///         an unlocked, unblocked request because the queue is paused.
+    function test_pause_stops_user_paths_and_leaves_ingress_and_owner_legs_live() public {
+        uint256 walletOwned = _queueErc20With(10 ether, ORIG, OWNR, RCVR);
+        uint256 contractOwned = _queueErc20With(10 ether, address(token), address(token), RCVR);
+        address suspect = address(0xB1AC);
+        uint256 suspectRequest = _queueErc20With(10 ether, suspect, OWNR, RCVR);
+        bytes32 routeId = _setupRoute(false);
+        vm.warp(block.timestamp + DELAY);
+
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(true);
+
+        uint256[] memory walletIds = new uint256[](1);
+        walletIds[0] = walletOwned;
+
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.QueuePaused.selector);
+        queue.executeExit(walletOwned);
+        vm.prank(ORIG);
+        vm.expectRevert(IExitDelayQueue.QueuePaused.selector);
+        queue.executeExits(walletIds);
+        vm.prank(OUTSIDER);
+        vm.expectRevert(IExitDelayQueue.QueuePaused.selector);
+        queue.executeExit(contractOwned);
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.QueuePaused.selector);
+        queue.recoverStuckExit(walletOwned, ALT);
+
+        uint256 recordedWhilePaused = _queueErc20With(1 ether, ORIG, OWNR, RCVR);
+        assertEq(uint8(queue.getRequest(recordedWhilePaused).status), uint8(IExitDelayQueue.ExitStatus.Queued));
+
+        vm.prank(ADMIN);
+        queue.blacklist(suspect);
+        uint256[] memory suspectIds = new uint256[](1);
+        suspectIds[0] = suspectRequest;
+        vm.prank(ADMIN);
+        queue.resolveToProtocol(suspectIds, routeId);
+        assertEq(
+            uint8(queue.getRequest(suspectRequest).status), uint8(IExitDelayQueue.ExitStatus.ResolvedToProtocol)
+        );
+
+        vm.prank(OWNER);
+        queue.resolveBySIP(walletIds, address(0x5EC0));
+        assertEq(uint8(queue.getRequest(walletOwned).status), uint8(IExitDelayQueue.ExitStatus.ResolvedBySIP));
+    }
+
     // ─── Who may deliver: parties always; anyone when the owner is a contract ──
 
     /// @notice A wallet-owned request is delivered only by its originator or owner.
