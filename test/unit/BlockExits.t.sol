@@ -415,4 +415,31 @@ contract BlockExitsTest is Test {
         );
         script.dispatch("enable-perimeter", _noAddrs(), _noIds(), false, "");
     }
+
+    /// @dev The controller keeps the delay switch (lowest byte) and length (next
+    ///      four bytes) packed in this slot.
+    bytes32 constant DELAY_SWITCH_SLOT = bytes32(uint256(271));
+
+    /// @dev Writes the switch on with the length unset. The controller's setters
+    ///      refuse this state, so it is written straight into storage.
+    function _switchOnWithLengthUnset(ExitFeeController ctrl) internal {
+        vm.store(address(ctrl), DELAY_SWITCH_SLOT, bytes32(uint256(1)));
+        assertTrue(ctrl.securityPerimeterEnabled(), "switch reads on");
+        assertEq(ctrl.globalDelaySeconds(), 0, "length unset");
+    }
+
+    /// @notice A switch that reads on with the length unset holds nothing, and
+    ///         the controller still refuses to switch on. The preview reports the
+    ///         unset length, never that the delay is already on.
+    function test_enable_perimeter_reports_an_unset_length_when_the_switch_already_reads_on() public {
+        ExitFeeController ctrl = _deployController();
+        _switchOnWithLengthUnset(ctrl);
+        script.initController(address(ctrl));
+        vm.expectRevert(
+            bytes(
+                "enable-perimeter would revert: the global delay length is unset (0) - the Owner must call setGlobalDelaySeconds first"
+            )
+        );
+        script.dispatch("enable-perimeter", _noAddrs(), _noIds(), false, "");
+    }
 }

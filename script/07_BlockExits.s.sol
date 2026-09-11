@@ -171,6 +171,9 @@ contract BlockExits is Script {
     ///      is unset (0), and the multisig records a failed inner call without
     ///      reverting its own transaction. So the length is read first and the
     ///      preview refuses, rather than handing out calldata that fails silently.
+    ///      The unset length is checked before the current state: a switch that
+    ///      already reads on with no length holds nothing, so it is reported as
+    ///      unset, never as already done.
     function _killSwitch(bool enabled) internal view {
         require(
             address(controller) != address(0),
@@ -183,16 +186,19 @@ contract BlockExits is Script {
         uint32 length = controller.globalDelaySeconds();
         console2.log("perimeter enabled    :", current);
         console2.log("global delay length  :", uint256(length), "seconds (0 = unset)");
-        if (current == enabled) {
-            console2.log("ALREADY in the requested state - nothing to submit.");
-            return;
-        }
         if (enabled && length == 0) {
+            if (current) {
+                console2.log("The switch already reads on, but with the length unset no withdrawal is held.");
+            }
             console2.log("WOULD REVERT (DelayUnset): the controller refuses to switch the delay on while");
             console2.log("its length is unset. The Owner sets it first with setGlobalDelaySeconds.");
             revert(
                 "enable-perimeter would revert: the global delay length is unset (0) - the Owner must call setGlobalDelaySeconds first"
             );
+        }
+        if (current == enabled) {
+            console2.log("ALREADY in the requested state - nothing to submit.");
+            return;
         }
         console2.log(
             enabled
