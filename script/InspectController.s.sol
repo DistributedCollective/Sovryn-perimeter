@@ -13,7 +13,11 @@ import {ExitDelayQueue} from "../src/ExitDelayQueue.sol";
 /// @notice Prints the live state of a deployed `ExitFeeController` proxy:
 ///         ownership, global flags, surface policies, and every configured
 ///         sub-product / actor override (read from the on-chain enumeration
-///         index -- no log scans).
+///         index -- no log scans). Beside every stored sub-product and actor
+///         row, on both the fee and the delay side, it prints the value that
+///         actually resolves for that address, labelled with the sub-product
+///         used, so an entry written inactive that is still exempt through a
+///         broader tier reads as exempt.
 ///
 /// @dev Usage:
 ///
@@ -115,6 +119,122 @@ contract InspectController is Script {
         if (length != 0) return "";
         if (enabled) return "  WARNING: switched on with the length unset (0) - no withdrawal is held";
         return "  (0 = unset: switching the delay on is refused until the Owner sets a length)";
+    }
+
+    // ── Resolved values beside stored rows ──────────────────────────────
+
+    /// @dev Gross used to show what a fee row resolves to; the labels print it
+    ///      as 1e18. The resolved rate is what matters, the amount only makes
+    ///      the charge visible.
+    uint256 internal constant SAMPLE_GROSS = 1e18;
+
+    /// @dev The sub-products an actor row is resolved at: none first, then every
+    ///      sub-product stored under the same surface on the same side. What an
+    ///      actor resolves to depends on the sub-product it withdraws from, so an
+    ///      exemption reachable only through a sub-product entry is shown too.
+    function _resolutionSubProducts(address[] memory keys) internal pure returns (address[] memory subs) {
+        subs = new address[](keys.length + 1);
+        for (uint256 i = 0; i < keys.length; i++) {
+            subs[i + 1] = keys[i];
+        }
+    }
+
+    /// @dev Names the resolution a line reports: the sub-product used and, for a
+    ///      sub-product row, that no actor entry applied.
+    function _resolutionLabel(address sub, address actor) internal pure returns (string memory) {
+        string memory label =
+            sub == address(0) ? "sub-product none" : string.concat("sub-product ", vm.toString(sub));
+        return actor == address(0) ? string.concat(label, ", actor without an entry") : label;
+    }
+
+    /// @dev What `quoteExitDelay` returns for this address, in words. A zero
+    ///      reads as exempt only while the delay is switched on with a length
+    ///      set; a switched-off delay and an unset length are named as such.
+    function _resolvedDelay(ExitFeeController c, bytes32 id, address sub, address actor)
+        internal
+        view
+        returns (string memory)
+    {
+        uint32 d = c.quoteExitDelay(id, sub, actor);
+        string memory value;
+        if (d != 0) value = string.concat("delayed ", vm.toString(uint256(d)), "s");
+        else if (!c.securityPerimeterEnabled()) value = "0s (delay switched off)";
+        else if (c.globalDelaySeconds() == 0) value = "0s (length unset - nothing held)";
+        else value = "exempt (0s)";
+        return string.concat("resolves ", value, " for ", _resolutionLabel(sub, actor));
+    }
+
+    /// @dev What `quoteExitFee` returns for this address on SAMPLE_GROSS, in
+    ///      words: the rate and fee when charged, exempt at an active 0 bps, and
+    ///      the skip reason when no fee applies.
+    function _resolvedFee(ExitFeeController c, bytes32 id, address sub, address actor)
+        internal
+        view
+        returns (string memory)
+    {
+        IExitFeeController.ExitFeeQuote memory q = c.quoteExitFee(id, sub, actor, SAMPLE_GROSS);
+        string memory value;
+        if (!q.active) value = string.concat("no fee (", _skipReasonName(q.reason), ")");
+        else if (q.rateBps == 0) value = "exempt (0 bps)";
+        else value = string.concat(vm.toString(uint256(q.rateBps)), " bps, fee ", vm.toString(q.feeAmount));
+        return string.concat("resolves ", value, " on sample gross 1e18 for ", _resolutionLabel(sub, actor));
+    }
+
+    function _skipReasonName(uint8 reason) internal pure returns (string memory) {
+        if (reason == uint8(IExitFeeController.SkipReason.INACTIVE)) return "INACTIVE: fee switch off";
+        if (reason == uint8(IExitFeeController.SkipReason.DISABLED)) {
+            return "DISABLED: surface off or no fee receiver";
+        }
+        if (reason == uint8(IExitFeeController.SkipReason.INVALID_QUOTE)) return "INVALID_QUOTE";
+        return string.concat("reason ", vm.toString(uint256(reason)));
+    }
+
+    function _printFeeSubProductRows(ExitFeeController c, bytes32 id, address[] memory subs) internal view {
+        if (subs.length == 0) return;
+        console2.log("  sub-products:");
+        for (uint256 j = 0; j < subs.length; j++) {
+            IExitFeeController.RatePolicy memory p = c.subProductPolicy(id, subs[j]);
+            console2.log(string.concat("    ", vm.toString(subs[j]), "  ", _fmtPolicy(p)));
+            console2.log(string.concat("      ", _resolvedFee(c, id, subs[j], address(0))));
+        }
+    }
+
+    function _printFeeActorRows(ExitFeeController c, bytes32 id, address[] memory actors, address[] memory subs)
+        internal
+        view
+    {
+        if (actors.length == 0) return;
+        console2.log("  actors:");
+        address[] memory at = _resolutionSubProducts(subs);
+        for (uint256 j = 0; j < actors.length; j++) {
+            IExitFeeController.RatePolicy memory p = c.actorPolicy(id, actors[j]);
+            console2.log(string.concat("    ", vm.toString(actors[j]), "  ", _fmtPolicy(p)));
+            for (uint256 k = 0; k < at.length; k++) {
+                console2.log(string.concat("      ", _resolvedFee(c, id, at[k], actors[j])));
+            }
+        }
+    }
+
+    function _printDelaySubProductRows(ExitFeeController c, bytes32 id, address[] memory subs) internal view {
+        for (uint256 j = 0; j < subs.length; j++) {
+            IExitFeeController.DelayBypassPolicy memory p = c.subProductBypass(id, subs[j]);
+            console2.log(string.concat("    sub-product ", vm.toString(subs[j]), "  ", _fmtBypass(p)));
+            console2.log(string.concat("      ", _resolvedDelay(c, id, subs[j], address(0))));
+        }
+    }
+
+    function _printDelayActorRows(ExitFeeController c, bytes32 id, address[] memory actors, address[] memory subs)
+        internal
+        view
+    {
+        address[] memory at = _resolutionSubProducts(subs);
+        for (uint256 j = 0; j < actors.length; j++) {
+            IExitFeeController.DelayBypassPolicy memory p = c.actorBypass(id, actors[j]);
+            console2.log(string.concat("    actor       ", vm.toString(actors[j]), "  ", _fmtBypass(p)));
+            for (uint256 k = 0; k < at.length; k++) {
+                console2.log(string.concat("      ", _resolvedDelay(c, id, at[k], actors[j])));
+            }
+        }
     }
 
     /// @dev single-guardian assertion. Reads the queue proxy from its
@@ -232,14 +352,9 @@ contract InspectController is Script {
             anyPrinted = true;
 
             console2.log(string.concat("  surface ", _labelFor(id), "  ", _fmtBypass(sb)));
-            for (uint256 j = 0; j < subBp.length; j++) {
-                IExitFeeController.DelayBypassPolicy memory p = c.subProductBypass(id, subBp[j]);
-                console2.log(string.concat("    sub-product ", vm.toString(subBp[j]), "  ", _fmtBypass(p)));
-            }
-            for (uint256 j = 0; j < actorBp.length; j++) {
-                IExitFeeController.DelayBypassPolicy memory p = c.actorBypass(id, actorBp[j]);
-                console2.log(string.concat("    actor       ", vm.toString(actorBp[j]), "  ", _fmtBypass(p)));
-            }
+            // Beside each stored row, the delay that resolves for that address.
+            _printDelaySubProductRows(c, id, subBp);
+            _printDelayActorRows(c, id, actorBp, subBp);
         }
         if (!anyPrinted) {
             console2.log("  (no delay bypasses configured at any tier)");
@@ -258,23 +373,10 @@ contract InspectController is Script {
         IExitFeeController.RatePolicy memory sp = c.surfacePolicy(id);
         console2.log(string.concat("  policy: ", _fmtPolicy(sp)));
 
+        // Beside each stored row, the fee that resolves for that address.
         address[] memory subs = c.subProductKeys(id);
-        if (subs.length > 0) {
-            console2.log("  sub-products:");
-            for (uint256 j = 0; j < subs.length; j++) {
-                IExitFeeController.RatePolicy memory p = c.subProductPolicy(id, subs[j]);
-                console2.log(string.concat("    ", vm.toString(subs[j]), "  ", _fmtPolicy(p)));
-            }
-        }
-
-        address[] memory actors = c.actorKeys(id);
-        if (actors.length > 0) {
-            console2.log("  actors:");
-            for (uint256 j = 0; j < actors.length; j++) {
-                IExitFeeController.RatePolicy memory p = c.actorPolicy(id, actors[j]);
-                console2.log(string.concat("    ", vm.toString(actors[j]), "  ", _fmtPolicy(p)));
-            }
-        }
+        _printFeeSubProductRows(c, id, subs);
+        _printFeeActorRows(c, id, c.actorKeys(id), subs);
         // NOTE: delay-bypass tiers are dumped separately in
         // `_printDelayBypassRegistry`, driven by the ANY-TIER-TOUCHED master set
         // `bypassSurfaceIds()` ∪ the named surfaces (NOT this hardcoded surface
