@@ -163,7 +163,7 @@ contract InspectControllerDiscoveryTest is Test {
 
     /// @dev The controller keeps the delay switch (lowest byte) and length (next
     ///      four bytes) packed in this slot.
-    bytes32 constant DELAY_SWITCH_SLOT = bytes32(uint256(271));
+    bytes32 constant DELAY_SWITCH_SLOT = bytes32(uint256(267));
 
     /// @dev While the delay is switched off every row reads 0s now, so each row
     ///      also shows what it would resolve to once switched on: an inactive

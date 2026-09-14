@@ -273,4 +273,9 @@ interface IExitFeeController {
 
     function removeActorBypasses(bytes32 surfaceId, address[] calldata actors) external;
 
+    /// @notice Withdraw an actor-tier exemption in one call: the fee entry
+    ///         inactive (surface rate applies), the delay entry active with no
+    ///         bypass (delayed whatever a wider tier says). Owner-only.
+    function revokeExemption(bytes32 surfaceId, address actor) external;
+
 }

@@ -174,7 +174,7 @@ contract InspectController is Script {
 
     /// @dev Storage slot holding the controller's delay switch (lowest byte) and
     ///      delay length (the next four bytes), packed.
-    uint256 internal constant DELAY_SWITCH_SLOT = 271;
+    uint256 internal constant DELAY_SWITCH_SLOT = 267;
 
     /// @dev Length written into the simulation while the real length is unset.
     ///      Any non-zero length separates held from exempt; this number is never

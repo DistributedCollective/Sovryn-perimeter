@@ -1062,11 +1062,10 @@ contract ExitFeeControllerTest is Test {
         vm.stopPrank();
     }
 
-    /// @dev Pins where the delay state lives in the proxy. Slots 265, 266, 269
-    ///      and 270 are declared and never written; the bypass discovery set
-    ///      must sit at 267..268 and the packed switch and length at 271, so a
-    ///      proxy whose storage already uses those positions reads the same
-    ///      values after an upgrade.
+    /// @dev Pins where the delay state lives in the proxy: the bypass discovery
+    ///      set at 265..266, the packed switch and length at 267, and 268 the
+    ///      first reserved slot. Nothing deployed holds these slots, so the
+    ///      layout is append-only against the fee build, which ends at 257.
     function test_storage_positions_of_the_delay_state() public {
         vm.startPrank(ADMIN);
         controller.setGlobalDelaySeconds(DELAY);
@@ -1078,17 +1077,13 @@ contract ExitFeeControllerTest is Test {
 
         address proxy = address(controller);
         assertEq(
-            uint256(vm.load(proxy, bytes32(uint256(271)))),
+            uint256(vm.load(proxy, bytes32(uint256(267)))),
             uint256(1) | (uint256(DELAY) << 8),
-            "slot 271: securityPerimeterEnabled at offset 0, globalDelaySeconds at offset 1"
+            "slot 267: securityPerimeterEnabled at offset 0, globalDelaySeconds at offset 1"
         );
-        assertEq(uint256(vm.load(proxy, bytes32(uint256(267)))), 1, "slot 267: bypass discovery set length");
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(265)))), 1, "slot 265: bypass discovery set length");
         assertEq(controller.bypassSurfaceIds().length, 1);
-        assertEq(uint256(vm.load(proxy, bytes32(uint256(265)))), 0, "slot 265 is never written");
-        assertEq(uint256(vm.load(proxy, bytes32(uint256(266)))), 0, "slot 266 is never written");
-        assertEq(uint256(vm.load(proxy, bytes32(uint256(269)))), 0, "slot 269 is never written");
-        assertEq(uint256(vm.load(proxy, bytes32(uint256(270)))), 0, "slot 270 is never written");
-        assertEq(uint256(vm.load(proxy, bytes32(uint256(272)))), 0, "slot 272 is the first reserved slot");
+        assertEq(uint256(vm.load(proxy, bytes32(uint256(268)))), 0, "slot 268 is the first reserved slot");
     }
 
     function test_globalDelay_only_owner() public {
@@ -1133,6 +1128,41 @@ contract ExitFeeControllerTest is Test {
         assertEq(controller.quoteExitDelay(SURFACE, IWRBTC, ACTOR), 0, "actor bypass wins");
         // A different actor still pays the (forced) delay.
         assertEq(controller.quoteExitDelay(SURFACE, IWRBTC, OTHER), DELAY);
+    }
+
+    // ─── revokeExemption: both halves withdrawn in one call ──
+
+    function test_revokeExemption_withdraws_fee_and_delay_halves() public {
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setFeeReceiver(VAULT);
+        controller.setExitFeeEnabled(true);
+        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 25}));
+        controller.setSurfaceBypass(SURFACE, _bp(true, true)); // a wide exemption sits above the actor
+        controller.setActorPolicy(SURFACE, ACTOR, IExitFeeController.RatePolicy({active: true, rateBps: 0}));
+        controller.setActorBypass(SURFACE, ACTOR, _bp(true, true));
+        vm.stopPrank();
+        assertEq(controller.quoteExitFee(SURFACE, IXUSD, ACTOR, 1e18).feeAmount, 0, "fee-exempt before");
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), 0, "delay-exempt before");
+
+        vm.prank(ADMIN);
+        controller.revokeExemption(SURFACE, ACTOR);
+
+        assertEq(controller.quoteExitFee(SURFACE, IXUSD, ACTOR, 1e18).feeAmount, 25e14, "surface rate applies again");
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), DELAY, "delayed despite the wide exemption");
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, OTHER), 0, "others keep the wide exemption");
+        IExitFeeController.DelayBypassPolicy memory b = controller.actorBypass(SURFACE, ACTOR);
+        assertTrue(b.active && !b.bypass, "delay entry written active with no bypass");
+        assertFalse(controller.actorPolicy(SURFACE, ACTOR).active, "fee entry written inactive");
+    }
+
+    function test_revokeExemption_only_owner_and_nonzero_actor() public {
+        vm.prank(GUARDIAN);
+        vm.expectRevert("Ownable: caller is not the owner");
+        controller.revokeExemption(SURFACE, ACTOR);
+        vm.prank(ADMIN);
+        vm.expectRevert(ExitFeeController.ActorZero.selector);
+        controller.revokeExemption(SURFACE, address(0));
     }
 
     function test_active_false_bypass_forces_delay_over_broader_bypass() public {

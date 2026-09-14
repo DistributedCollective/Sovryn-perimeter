@@ -506,7 +506,7 @@ contract BlockExitsTest is Test {
 
     /// @dev The controller keeps the delay switch (lowest byte) and length (next
     ///      four bytes) packed in this slot.
-    bytes32 constant DELAY_SWITCH_SLOT = bytes32(uint256(271));
+    bytes32 constant DELAY_SWITCH_SLOT = bytes32(uint256(267));
 
     /// @dev Writes the switch on with the length unset. The controller's setters
     ///      refuse this state, so it is written straight into storage.
