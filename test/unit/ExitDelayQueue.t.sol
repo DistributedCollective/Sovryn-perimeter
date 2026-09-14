@@ -1166,7 +1166,7 @@ contract ExitDelayQueueTest is Test {
 
         vm.prank(OWNER);
         vm.expectRevert(bytes("BLK: sender blocked"));
-        queue.resolveBySIP(ids, address(0xD00D));
+        queue.resolveByOwner(ids, address(0xD00D));
 
         assertEq(
             uint256(queue.getRequest(id).status),
@@ -1385,20 +1385,31 @@ contract ExitDelayQueueTest is Test {
 
     // ── recovery: Leg 3 ──
 
-    function test_resolveBySIP_on_blocked_request() public {
+    function test_resolveByOwner_on_blacklisted_party() public {
         _queueErc20(10 ether);
         vm.prank(ADMIN);
-        queue.freeze(RCVR); // receiver-only block → held, resolvable by SIP
+        queue.blacklist(RCVR); // a blacklisted receiver alone admits the request
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         address dest = address(0x7EEA);
         vm.prank(OWNER);
-        queue.resolveBySIP(ids, dest);
+        queue.resolveByOwner(ids, dest);
         assertEq(token.balanceOf(dest), 10 ether);
-        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedBySIP));
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedByOwner));
     }
 
-    function test_resolveBySIP_on_paused() public {
+    function test_resolveByOwner_frozen_party_is_not_enough() public {
+        _queueErc20(10 ether);
+        vm.prank(ADMIN);
+        queue.freeze(RCVR); // held in place, not released to the Owner
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = 1;
+        vm.prank(OWNER);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotResolvableByOwner.selector, 1));
+        queue.resolveByOwner(ids, address(0x7EEA));
+    }
+
+    function test_resolveByOwner_pause_alone_admits_nothing() public {
         _queueErc20(10 ether);
         vm.warp(block.timestamp + DELAY);
         vm.prank(ADMIN);
@@ -1406,37 +1417,49 @@ contract ExitDelayQueueTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OWNER);
-        queue.resolveBySIP(ids, address(0x7EEA));
-        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedBySIP));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotResolvableByOwner.selector, 1));
+        queue.resolveByOwner(ids, address(0x7EEA));
     }
 
-    function test_resolveBySIP_on_not_yet_unlocked() public {
+    function test_resolveByOwner_delay_window_alone_admits_nothing() public {
         _queueErc20(10 ether);
-        // still locked → resolvable
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OWNER);
-        queue.resolveBySIP(ids, address(0x7EEA));
-        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedBySIP));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotResolvableByOwner.selector, 1));
+        queue.resolveByOwner(ids, address(0x7EEA));
     }
 
-    function test_resolveBySIP_rejects_honest_unlocked_request() public {
+    function test_resolveByOwner_reaches_a_blacklisted_party_while_paused_and_locked() public {
+        _queueErc20(10 ether);
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(true);
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = 1;
+        vm.prank(OWNER);
+        queue.resolveByOwner(ids, address(0x7EEA));
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedByOwner));
+    }
+
+    function test_resolveByOwner_rejects_honest_unlocked_request() public {
         _queueErc20(10 ether);
         vm.warp(block.timestamp + DELAY); // unlocked, unblocked, not paused
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OWNER);
-        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotResolvableBySIP.selector, 1));
-        queue.resolveBySIP(ids, address(0x7EEA));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotResolvableByOwner.selector, 1));
+        queue.resolveByOwner(ids, address(0x7EEA));
     }
 
-    function test_resolveBySIP_only_owner() public {
+    function test_resolveByOwner_only_owner() public {
         _queueErc20(10 ether);
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(ADMIN); // admin cannot Leg-3
         vm.expectRevert();
-        queue.resolveBySIP(ids, address(0x7EEA));
+        queue.resolveByOwner(ids, address(0x7EEA));
     }
 
     // ── recoverStuckExit(id, altReceiver) — verify-by-attempting redirect leg ──
@@ -1493,30 +1516,9 @@ contract ExitDelayQueueTest is Test {
         assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Executed));
     }
 
-    /// @notice A caller cannot force a false bounce by starving the stored-receiver
-    ///         payout: supplying less than the recovery gas budget reverts the whole
-    ///         call (InsufficientGasForRecovery) rather than redirecting to altReceiver.
-    function test_recover_reverts_when_gas_below_budget() public {
-        GasSinkReceiver sink = new GasSinkReceiver();
-        uint256 id = source.recordNative{value: 4 ether}(
-            4 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(sink)
-        );
-        vm.warp(block.timestamp + DELAY);
-
-        // Give the call less than RECOVER_PAYOUT_GAS + floor: it must revert,
-        // not swallow an out-of-gas as a bounce and pay ALT.
-        vm.prank(OWNR);
-        vm.expectRevert(ExitDelayQueue.InsufficientGasForRecovery.selector);
-        queue.recoverStuckExit{gas: 2_000_000}(id, ALT);
-
-        // Escrow untouched, request still Queued — no redirect happened.
-        assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Queued));
-        assertEq(queue.totalEscrowed(address(0)), 4 ether);
-    }
-
-    /// @notice A receiver that genuinely needs more than the gas budget IS a
-    ///         bounce: with ample total gas, the stored-receiver attempt is capped,
-    ///         caught, and altReceiver is paid — the intended stuck-exit recovery.
+    /// @notice A receiver that consumes every unit of gas it is given is a bounce:
+    ///         with ample total gas the attempt fails, is caught, and altReceiver is
+    ///         paid — the intended stuck-exit recovery.
     function test_recover_gas_sink_receiver_falls_through_to_alt() public {
         GasSinkReceiver sink = new GasSinkReceiver();
         uint256 id = source.recordNative{value: 4 ether}(
@@ -1531,59 +1533,62 @@ contract ExitDelayQueueTest is Test {
         assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.Executed));
     }
 
-    /// @notice The recovery gas boundary as built. The stored-receiver attempt is
-    ///         given RECOVER_PAYOUT_GAS; after the self-call's own work and the
-    ///         63/64 rule on the inner send, a native receiver can spend a little
-    ///         under 2,900,000 of a 3,000,000 budget. A receiver that accepts within
-    ///         that is paid. A receiver that would accept only with more gas is
-    ///         treated as refusing and the money goes to the alternate, although a
-    ///         plain delivery with enough gas pays that same receiver. The two
-    ///         receivers sit about 50,000 gas either side of that edge, so moving
-    ///         the budget by about 60,000 in either direction fails this test.
-    function test_recover_gas_boundary_as_built() public {
-        GasHungryReceiver within = new GasHungryReceiver(2_850_000);
-        GasHungryReceiver beyond = new GasHungryReceiver(2_950_000);
-        uint256 idWithin =
-            source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(within));
-        uint256 idBeyond =
-            source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(beyond));
-        uint256 idBeyondDelivered =
-            source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(beyond));
+    /// @notice No budget stands between a receiver and its payment: a receiver
+    ///         that needs a lot of gas is paid by recovery when the caller supplies it.
+    function test_recover_pays_a_gas_hungry_receiver_when_the_caller_supplies_gas() public {
+        GasHungryReceiver hungry = new GasHungryReceiver(2_950_000);
+        uint256 id =
+            source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(hungry));
         vm.warp(block.timestamp + DELAY);
-
         uint256 altBefore = ALT.balance;
-
         vm.prank(OWNR);
-        queue.recoverStuckExit{gas: 5_000_000}(idWithin, ALT);
-        assertEq(address(within).balance, 1 ether, "accepted within the budget: stored receiver paid");
+        queue.recoverStuckExit{gas: 6_800_000}(id, ALT);
+        assertEq(address(hungry).balance, 1 ether, "stored receiver paid");
         assertEq(ALT.balance, altBefore, "alternate untouched");
-
-        vm.prank(OWNR);
-        queue.recoverStuckExit{gas: 5_000_000}(idBeyond, ALT);
-        assertEq(address(beyond).balance, 0, "needs more than the budget: stored receiver not paid");
-        assertEq(ALT.balance, altBefore + 1 ether, "redirected to the alternate");
-
-        vm.prank(OWNR);
-        queue.executeExit{gas: 5_000_000}(idBeyondDelivered);
-        assertEq(address(beyond).balance, 1 ether, "the same receiver accepts a plain delivery with enough gas");
     }
 
-    /// @notice resolveBySIP rejects a destination that would trap or swallow the
+    /// @notice The measurement behind the caller-supplied budget: with a receiver
+    ///         that consumes every unit it is given, the smallest gas limit at which
+    ///         recovery still pays the alternate out of the EVM's retained 1/64, on
+    ///         both the native and the ERC20 path. Logged, and pinned under the
+    ///         block limit.
+    function test_recover_gas_sink_minimum_limit_measured() public {
+        uint256[] memory limits = new uint256[](9);
+        limits[0] = 400_000; limits[1] = 600_000; limits[2] = 800_000; limits[3] = 1_000_000;
+        limits[4] = 1_500_000; limits[5] = 2_000_000; limits[6] = 3_000_000; limits[7] = 4_000_000; limits[8] = 6_800_000;
+        uint256 minNative; uint256 minErc20;
+        for (uint256 i = 0; i < limits.length; i++) {
+            GasSinkReceiver sinkN = new GasSinkReceiver();
+            uint256 idN = source.recordNative{value: 1 ether}(1 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, address(sinkN));
+            uint256 idE = _queueErc20With(10 ether, ORIG, OWNR, address(new GasSinkReceiver()));
+            vm.warp(block.timestamp + DELAY);
+            vm.prank(OWNR);
+            try queue.recoverStuckExit{gas: limits[i]}(idN, ALT) { if (minNative == 0) minNative = limits[i]; } catch {}
+            vm.prank(OWNR);
+            try queue.recoverStuckExit{gas: limits[i]}(idE, ALT) { if (minErc20 == 0) minErc20 = limits[i]; } catch {}
+        }
+        emit log_named_uint("smallest gas limit that recovers past a gas-sink receiver, native", minNative);
+        emit log_named_uint("smallest gas limit that recovers past a gas-sink receiver, erc20", minErc20);
+        assertTrue(minNative != 0 && minNative <= 6_800_000, "native recovery fits under the block limit");
+        assertTrue(minErc20 != 0 && minErc20 <= 6_800_000, "erc20 recovery fits under the block limit");
+    }
+
+    /// @notice resolveByOwner rejects a destination that would trap or swallow the
     ///         escrow: the queue itself, WRBTC, or the escrowed token.
-    function test_resolveBySIP_rejects_trapping_destinations() public {
+    function test_resolveByOwner_rejects_trapping_destinations() public {
         uint256 id = _queueErc20(10 ether);
         vm.prank(ADMIN);
-        queue.setSecurityPerimeterPaused(true); // make the request resolvable
+        queue.blacklist(ORIG); // admit the request, so the destination guard is what answers
         uint256[] memory ids = new uint256[](1);
         ids[0] = id;
 
         vm.startPrank(OWNER);
         vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(queue)));
-        queue.resolveBySIP(ids, address(queue));
+        queue.resolveByOwner(ids, address(queue));
         vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(wrbtc)));
-        queue.resolveBySIP(ids, address(wrbtc));
+        queue.resolveByOwner(ids, address(wrbtc));
         vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(token)));
-        queue.resolveBySIP(ids, address(token));
+        queue.resolveByOwner(ids, address(token));
         vm.stopPrank();
     }
 
@@ -1881,35 +1886,42 @@ contract ExitDelayQueueTest is Test {
         queue.recoverStuckExit(1, address(wrbtc));
     }
 
-    /// @notice (f) caller not in {originator, owner} → reverts NotExecutor. The
-    ///         receiver may NOT recover, and neither may an outsider.
-    function test_recover_reverts_if_caller_not_executor() public {
+    /// @notice The receiver is a party and may recover its own request.
+    function test_recover_receiver_may_call() public {
         _queueErc20(10 ether);
         vm.warp(block.timestamp + DELAY);
-        // The stored receiver is not an executor.
+        uint256 before = token.balanceOf(RCVR);
         vm.prank(RCVR);
-        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, RCVR));
         queue.recoverStuckExit(1, ALT);
-        // Neither is an arbitrary outsider.
+        // A healthy stored receiver is paid; the alternate is never used.
+        assertEq(token.balanceOf(RCVR) - before, 10 ether);
+        assertEq(token.balanceOf(ALT), 0);
+    }
+
+    /// @notice (f) a caller outside {originator, owner, receiver} → reverts NotExecutor.
+    function test_recover_reverts_if_caller_not_a_party() public {
+        _queueErc20(10 ether);
+        vm.warp(block.timestamp + DELAY);
         vm.prank(OUTSIDER);
         vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, OUTSIDER));
         queue.recoverStuckExit(1, ALT);
     }
 
-    /// @notice Being the recorded receiver grants no right to recover. An address
-    ///         that is only the receiver is refused; an address that is the
-    ///         receiver and also the originator and owner (a withdrawal to self),
-    ///         or the receiver and also the owner, recovers as that party.
-    function test_recover_receiver_calls_only_as_originator_or_owner() public {
+    /// @notice Every party may recover: an address that is only the receiver, one
+    ///         that is originator, owner and receiver at once (a withdrawal to
+    ///         self), and one that is receiver and owner. A healthy stored
+    ///         receiver is paid in each case and the alternate is never used.
+    function test_recover_every_party_may_call() public {
         address self = address(0x5E1F);
         uint256 toOther = _queueErc20With(10 ether, ORIG, OWNR, RCVR);
         uint256 toSelf = _queueErc20With(10 ether, self, self, self);
         uint256 toOwner = _queueErc20With(10 ether, ORIG, OWNR, OWNR);
         vm.warp(block.timestamp + DELAY);
 
+        uint256 rcvrBefore = token.balanceOf(RCVR);
         vm.prank(RCVR);
-        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, RCVR));
         queue.recoverStuckExit(toOther, ALT);
+        assertEq(token.balanceOf(RCVR), rcvrBefore + 10 ether, "receiver alone recovers and is paid");
 
         uint256 selfBefore = token.balanceOf(self);
         vm.prank(self);
@@ -2638,33 +2650,33 @@ contract ExitDelayQueueTest is Test {
         queue.resolveToProtocol(ids, routeId);
     }
 
-    // ── resolveBySIP guard arms: EmptyIds / ZeroAddress / UnknownRequest / AlreadyTerminal ──
+    // ── resolveByOwner guard arms: EmptyIds / ZeroAddress / UnknownRequest / AlreadyTerminal ──
 
-    function test_resolveBySIP_empty_ids_reverts() public {
+    function test_resolveByOwner_empty_ids_reverts() public {
         uint256[] memory ids = new uint256[](0);
         vm.prank(OWNER);
         vm.expectRevert(IExitDelayQueue.EmptyIds.selector);
-        queue.resolveBySIP(ids, address(0x7EEA));
+        queue.resolveByOwner(ids, address(0x7EEA));
     }
 
-    function test_resolveBySIP_zero_destination_reverts() public {
+    function test_resolveByOwner_zero_destination_reverts() public {
         _queueErc20(10 ether);
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OWNER);
         vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(0)));
-        queue.resolveBySIP(ids, address(0));
+        queue.resolveByOwner(ids, address(0));
     }
 
-    function test_resolveBySIP_unknown_request_reverts() public {
+    function test_resolveByOwner_unknown_request_reverts() public {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 99;
         vm.prank(OWNER);
         vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.UnknownRequest.selector, 99));
-        queue.resolveBySIP(ids, address(0x7EEA));
+        queue.resolveByOwner(ids, address(0x7EEA));
     }
 
-    function test_resolveBySIP_already_terminal_reverts() public {
+    function test_resolveByOwner_already_terminal_reverts() public {
         _queueErc20(10 ether);
         vm.warp(block.timestamp + DELAY);
         vm.prank(OWNR);
@@ -2673,7 +2685,7 @@ contract ExitDelayQueueTest is Test {
         ids[0] = 1;
         vm.prank(OWNER);
         vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.AlreadyTerminal.selector, 1));
-        queue.resolveBySIP(ids, address(0x7EEA));
+        queue.resolveByOwner(ids, address(0x7EEA));
     }
 
     // ── sweepSurplus backstop arms: SweepToZero + SolvencyViolated (native & ERC20) ──
@@ -2827,8 +2839,8 @@ contract ExitDelayQueueTest is Test {
 
     /// @notice A pause stops every user-facing leg for every caller, so users
     ///         have no path of their own. Ingress, the block levers, the route
-    ///         leg and the Owner's catch-all stay live, and the catch-all admits
-    ///         an unlocked, unblocked request because the queue is paused.
+    ///         leg and the Owner's lever stay live; the pause itself admits
+    ///         nothing to that lever, a blacklisted party still does.
     function test_pause_stops_user_paths_and_leaves_ingress_and_owner_legs_live() public {
         uint256 walletOwned = _queueErc20With(10 ether, ORIG, OWNR, RCVR);
         uint256 contractOwned = _queueErc20With(10 ether, address(token), address(token), RCVR);
@@ -2870,8 +2882,13 @@ contract ExitDelayQueueTest is Test {
         );
 
         vm.prank(OWNER);
-        queue.resolveBySIP(walletIds, address(0x5EC0));
-        assertEq(uint8(queue.getRequest(walletOwned).status), uint8(IExitDelayQueue.ExitStatus.ResolvedBySIP));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotResolvableByOwner.selector, walletOwned));
+        queue.resolveByOwner(walletIds, address(0x5EC0));
+        vm.prank(ADMIN);
+        queue.blacklist(RCVR);
+        vm.prank(OWNER);
+        queue.resolveByOwner(walletIds, address(0x5EC0));
+        assertEq(uint8(queue.getRequest(walletOwned).status), uint8(IExitDelayQueue.ExitStatus.ResolvedByOwner));
     }
 
     // ─── Who may deliver: parties always; anyone when the owner is a contract ──

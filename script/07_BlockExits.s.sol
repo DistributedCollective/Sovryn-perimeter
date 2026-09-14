@@ -37,9 +37,8 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///         the products keep working. It does NOT stop the block levers, the
 ///         Admin-or-Owner `resolveToProtocol` (still bound to a blacklisted
 ///         originator or owner and a matching active route), or the Owner's
-///         `resolveBySIP`, and those legs still pay out. While paused EVERY
-///         queued request, unlocked and unblocked ones included, is eligible for
-///         `resolveBySIP`. Owner configuration and `sweepSurplus` are unaffected.
+///         `resolveByOwner`, which reaches only requests with a blacklisted party,
+///         paused or not. Owner configuration and `sweepSurplus` are unaffected.
 ///         Use it when the target is not yet identified; use the per-actor lever
 ///         once it is.
 ///
@@ -177,13 +176,12 @@ contract BlockExits is Script {
             console2.log("Stops executeExit, executeExits and recoverStuckExit for every caller - the originator, the");
             console2.log("owner, and anyone delivering a contract-owned request. New exits keep escrowing.");
             console2.log("Still live, and still paying out: the Admin-or-Owner resolveToProtocol (a blacklisted");
-            console2.log("originator or owner with a matching active route) and the Owner's resolveBySIP. While");
-            console2.log("paused, EVERY queued request - unlocked and unblocked ones included - is eligible for");
-            console2.log("resolveBySIP. The block levers, Owner configuration and sweepSurplus are unaffected.");
+            console2.log("originator or owner with a matching active route) and the Owner's resolveByOwner, which");
+            console2.log("reaches only requests with a blacklisted party, paused or not. The block levers, Owner");
+            console2.log("configuration and sweepSurplus are unaffected.");
         } else {
             console2.log("Resumes executeExit, executeExits and recoverStuckExit. Per-actor blocks are unaffected.");
-            console2.log("resolveBySIP again reaches only requests with a blocked originator, owner or receiver,");
-            console2.log("or still locked.");
+            console2.log("resolveByOwner is unchanged: it reaches only requests with a blacklisted party.");
         }
         _emitCalldata(
             address(queue), abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)), on ? "pause" : "unpause"

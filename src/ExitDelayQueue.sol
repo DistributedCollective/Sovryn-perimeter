@@ -163,9 +163,9 @@ contract ExitDelayQueue is
     ///         `receive`), so withdrawals keep escrowing; the block levers; the
     ///         Admin-or-Owner `resolveToProtocol`, which still needs a
     ///         blacklisted originator or owner and a matching active route; and
-    ///         the Owner's `resolveBySIP`, for which a pause makes EVERY queued
-    ///         request eligible, unlocked and unblocked ones included. Owner
-    ///         configuration and `sweepSurplus` are unaffected.
+    ///         the Owner's `resolveByOwner`, which reaches only requests with a
+    ///         blacklisted party, paused or not. Owner configuration and
+    ///         `sweepSurplus` are unaffected.
     ///         Packs with nativePusher (address) + minimumDelaySeconds (uint32).
     bool public securityPerimeterPaused;
 
@@ -199,7 +199,6 @@ contract ExitDelayQueue is
     error NotAdminOrOwner(address caller);
     error OwnershipCannotBeRenounced();
     error UpgradeImplZero();
-    error InsufficientGasForRecovery();
     error InvalidDestination(address destination);
 
     // ─── Construction / initialization ──────────────────────────────────
@@ -546,10 +545,13 @@ contract ExitDelayQueue is
         if (r.status == ExitStatus.None) revert UnknownRequest(id);
         if (r.status != ExitStatus.Queued) revert AlreadyTerminal(id);
         if (block.timestamp < r.unlockAt) revert NotUnlocked(id, r.unlockAt);
-        if (msg.sender != r.originator && msg.sender != r.owner) revert NotExecutor(msg.sender);
-
         address token = r.token;
         address receiver = r.receiver;
+        // The three parties to the request may recover it; a receiver that
+        // cannot accept the payout but can act may point it elsewhere itself.
+        if (msg.sender != r.originator && msg.sender != r.owner && msg.sender != receiver) {
+            revert NotExecutor(msg.sender);
+        }
 
         // altReceiver guard: a payout-time destination, never the zero
         // address, this contract (would trap escrow), the escrowed token, or WRBTC
@@ -596,34 +598,21 @@ contract ExitDelayQueue is
         emit ExitExecuted(id, paid, token, amount);
     }
 
-    /// @notice Gas budget the stored-receiver payout attempt is given, and the
-    ///         floor the caller must leave beyond it. A genuine receiver revert
-    ///         returns control with the floor intact; only a receiver that needs
-    ///         MORE than the budget is read as a bounce. Fixing the budget and
-    ///         requiring the frame to hold it means the fall-through to
-    ///         `altReceiver` cannot be reached by starving the attempt: a caller
-    ///         who supplies too little gas reverts the whole call instead of
-    ///         redirecting a healthy exit. The budget covers any realistic ERC20
-    ///         transfer or WRBTC unwrap-and-send with wide margin.
-    uint256 public constant RECOVER_PAYOUT_GAS = 3_000_000;
-    uint256 internal constant RECOVER_GAS_FLOOR = 200_000;
-
     /// @dev Catchable single-payout attempt for `recoverStuckExit`. Routes the
     ///      transfer through an EXTERNAL self-call so a reverting recipient is
     ///      caught (Solidity cannot catch a low-level revert inline) and the leg
-    ///      can fall through to `altReceiver`. Returns false on a genuine bounce.
+    ///      can fall through to `altReceiver`. Returns false on a bounce.
     ///      Self-only (`msg.sender == address(this)`); NOT `nonReentrant` — it runs
     ///      inside `recoverStuckExit`'s guard, and CEI already made the state safe.
     ///
-    ///      The explicit gas cap plus the pre-check are the guard against a false
-    ///      bounce: without a fixed budget, EIP-150's 63/64 rule lets a caller
-    ///      pick a gas limit that out-of-gases the attempt (caught here as a
-    ///      "bounce") while the retained 1/64 still completes the `altReceiver`
-    ///      payout — redirecting a healthy exit. Reserving the budget and
-    ///      reverting when the frame cannot cover it closes that path.
+    ///      The attempt is given the gas the transaction carries: the caller's
+    ///      gas limit is the budget, and a receiver that needs more is retried
+    ///      with more. The EVM forwards at most 63/64 of what remains, so a
+    ///      receiver that consumes everything it is given still leaves the
+    ///      1/64 that pays `altReceiver`, provided the caller supplied enough
+    ///      for both; a caller who did not sees the whole call revert.
     function _tryPayout(address token, address to, uint128 amount, bool unwrap) internal returns (bool) {
-        if (gasleft() < RECOVER_PAYOUT_GAS + RECOVER_GAS_FLOOR) revert InsufficientGasForRecovery();
-        try this.payoutExternal{gas: RECOVER_PAYOUT_GAS}(token, to, amount, unwrap) {
+        try this.payoutExternal(token, to, amount, unwrap) {
             return true;
         } catch {
             return false;
@@ -906,13 +895,12 @@ contract ExitDelayQueue is
     }
 
     /// @inheritdoc IExitDelayQueue
-    /// @dev Leg-3: Owner catch-all, bounded to a request that is blocked, paused,
-    ///      or still inside its delay window. A request past its unlock time with
-    ///      no party blocked and the queue unpaused is out of reach here — the
-    ///      delay window is deliberately in scope, because holding a withdrawal
-    ///      until it unlocks so a detected theft can be resolved away is the whole
-    ///      point of the queue.
-    function resolveBySIP(uint256[] calldata ids, address destination) external nonReentrant onlyOwner {
+    /// @dev Leg-3: the Owner's lever, reaching only a request with a blacklisted
+    ///      party. Neither a pause nor the delay window admits a request here:
+    ///      a hold keeps the money in place, and only the determination that a
+    ///      party is blacklisted releases it to a destination of the Owner's
+    ///      choosing. Everything else stays with the parties' own levers.
+    function resolveByOwner(uint256[] calldata ids, address destination) external nonReentrant onlyOwner {
         if (ids.length == 0) revert EmptyIds();
         // Same destination guard as recoverStuckExit's altReceiver: never the
         // zero address, this contract (would trap the escrow), or WRBTC (a
@@ -927,29 +915,26 @@ contract ExitDelayQueue is
             if (r.status == ExitStatus.None) revert UnknownRequest(id);
             if (r.status != ExitStatus.Queued) revert AlreadyTerminal(id);
 
-            // Bounded predicate: blocked | paused | locked. A fully-unblocked,
-            // unlocked, unpaused request is out of reach. A bouncing (but
-            // unblocked) recipient is NOT admitted here — it is handled
+            // A blacklisted party — originator, owner or receiver — is the only
+            // thing that admits a request. A frozen party keeps it held but in
+            // place; a bouncing recipient is the parties' own matter, handled
             // self-service via recoverStuckExit(id, altReceiver).
-            bool resolvable = _isBlocked(r.originator) || _isBlocked(r.owner) || _isBlocked(r.receiver)
-                || securityPerimeterPaused || block.timestamp < r.unlockAt;
-            if (!resolvable) revert NotResolvableBySIP(id);
+            bool resolvable = _blockState[r.originator] == BlockState.Blacklisted
+                || _blockState[r.owner] == BlockState.Blacklisted
+                || _blockState[r.receiver] == BlockState.Blacklisted;
+            if (!resolvable) revert NotResolvableByOwner(id);
 
             address token = r.token;
             if (destination == token) revert InvalidDestination(destination);
             uint128 amount = r.amount;
-            r.status = ExitStatus.ResolvedBySIP;
+            r.status = ExitStatus.ResolvedByOwner;
             _removeActive(id, r.originator, r.owner);
             _totalEscrowed[token] -= amount;
 
-            emit ExitResolvedBySIP(id, destination, amount);
+            emit ExitResolvedByOwner(id, destination, amount);
             _payout(token, destination, amount, false);
             _requireSolventAfterPayout(token, false);
         }
-    }
-
-    function _isBlocked(address a) internal view returns (bool) {
-        return _blockState[a] != BlockState.None;
     }
 
     /// @inheritdoc IExitDelayQueue
@@ -1065,7 +1050,7 @@ contract ExitDelayQueue is
     ///      (status already terminal → held until Leg-3 redirects).
     ///
     ///      LIMIT OF THE REMEDY CLAIM. All four disposal legs — execute, recover,
-    ///      resolve-to-protocol, resolve-by-SIP — end here. Every reachable Queued
+    ///      resolve-to-protocol, resolve-by-owner — end here. Every reachable Queued
     ///      state has a remedy within this contract's own state machine, but not
     ///      beyond it: if an escrowed ERC20 later refuses to move this contract's
     ///      balance (an upgradeable token adding a blocklist, a pause, a

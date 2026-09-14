@@ -439,14 +439,14 @@ contract ExitDelayQueueHandler is Test {
 
     // ── recovery ──
 
-    function resolveBySIP(uint256 idSeed) external {
+    function resolveByOwner(uint256 idSeed) external {
         if (liveIds.length == 0) return;
         uint256 id = liveIds[idSeed % liveIds.length];
         IExitDelayQueue.ExitRequest memory r = queue.getRequest(id);
         if (r.status != IExitDelayQueue.ExitStatus.Queued) return;
         uint256[] memory ids = new uint256[](1);
         ids[0] = id;
-        try queue.resolveBySIP(ids, address(0xD00D)) {
+        try queue.resolveByOwner(ids, address(0xD00D)) {
             _onTerminal(r);
         } catch {}
     }

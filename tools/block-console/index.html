@@ -164,8 +164,8 @@
         path of their own to their money while it holds. New withdrawals still escrow, and the block levers
         still work. It does <b>not</b> stop the Owner and Admin legs, which still pay out: the Admin-or-Owner
         <code>resolveToProtocol</code>, still bound to a blacklisted originator or owner and a matching active
-        route, and the Owner&rsquo;s <code>resolveBySIP</code> — while paused, <b>every</b> queued request,
-        unlocked and unblocked ones included, is eligible for it. Owner configuration and
+        route, and the Owner&rsquo;s <code>resolveByOwner</code>, which reaches only requests with a
+        blacklisted party, paused or not. Owner configuration and
         <code>sweepSurplus</code> are unaffected. Use it when the fraudulent requests cannot be picked out one
         by one, then resume once they can.</p>
       <div class="bar" style="margin:0">
@@ -357,7 +357,7 @@ async function call(rpc, to, data) {
 }
 
 // ExitRequest is a struct of only static members, so it decodes as consecutive words.
-const STATUS = ["None", "Queued", "Executed", "Resolved to protocol", "Resolved by SIP"];
+const STATUS = ["None", "Queued", "Executed", "Resolved to protocol", "Resolved by owner"];
 const BLOCK = ["clear", "frozen", "blacklisted"];
 function decodeRequest(id, hex) {
   if (!hex || hex === "0x") return null;
@@ -418,7 +418,7 @@ function setStrip() {
   card.hidden = false;
   $("pauseBtn").textContent = CTX.paused ? "Resume releases" : "Pause releases";
   $("pauseState").textContent = CTX.paused
-    ? "User payouts are halted and new withdrawals still escrow. The Owner's resolveBySIP and the Admin-or-Owner resolveToProtocol still pay out."
+    ? "User payouts are halted and new withdrawals still escrow. The Owner's resolveByOwner and the Admin-or-Owner resolveToProtocol still pay out."
     : "Releases are live.";
   $("pauseOut").innerHTML = "";
 }

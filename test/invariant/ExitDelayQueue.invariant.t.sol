@@ -67,7 +67,7 @@ contract ExitDelayQueueInvariant is Test {
         selectors[5] = handler.unfreeze.selector;
         selectors[6] = handler.unblacklist.selector;
         selectors[7] = handler.pause.selector;
-        selectors[8] = handler.resolveBySIP.selector;
+        selectors[8] = handler.resolveByOwner.selector;
         selectors[9] = handler.sweep.selector;
         selectors[10] = handler.warp.selector;
         //  coverage: measured-delta ingress + donation/force-send surplus.

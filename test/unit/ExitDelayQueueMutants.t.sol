@@ -140,7 +140,7 @@ contract ExitDelayQueueMutantsTest is Test {
     event ExitResolvedToProtocol(
         uint256 indexed id, bytes32 indexed routeId, address destination, uint128 amount
     );
-    event ExitResolvedBySIP(uint256 indexed id, address indexed destination, uint128 amount);
+    event ExitResolvedByOwner(uint256 indexed id, address indexed destination, uint128 amount);
     event RecoveryRouteRemoved(bytes32 indexed routeId);
     event TopUpFeasibleSet(bytes32 indexed surfaceId, bool feasible);
     event NativePusherSet(address indexed pusher);
@@ -571,14 +571,14 @@ contract ExitDelayQueueMutantsTest is Test {
         queue.resolveToProtocol(ids, routeId);
     }
 
-    /// @notice `resolveBySIP` prunes the resolved request from both parties'
+    /// @notice `resolveByOwner` prunes the resolved request from both parties'
     ///         active-index sets, announces the resolution via
-    ///         `ExitResolvedBySIP`, and (like the other two payout legs)
+    ///         `ExitResolvedByOwner`, and (like the other two payout legs)
     ///         enforces the post-payout solvency floor. No existing Leg-3 test
     ///         reads `getActive` afterward, asserts the emit, or drives a
     ///         solvency failure through this leg, so all three could be
     ///         dropped independently without any test noticing.
-    function test_mutant_ExitDelayQueue_870_875_resolveBySIP_removes_emits_and_checks_solvency()
+    function test_mutant_ExitDelayQueue_870_875_resolveByOwner_removes_emits_and_checks_solvency()
         public
     {
         uint128 amount = 10 ether;
@@ -587,15 +587,17 @@ contract ExitDelayQueueMutantsTest is Test {
 
         uint256[] memory ids = new uint256[](1);
         ids[0] = id;
+        vm.prank(ADMIN);
+        queue.blacklist(RCVR); // the one thing that admits a request to this leg
         vm.expectEmit(true, true, false, true, address(queue));
-        emit ExitResolvedBySIP(id, dest, amount);
+        emit ExitResolvedByOwner(id, dest, amount);
         vm.prank(OWNER);
-        queue.resolveBySIP(ids, dest); // still locked -> resolvable regardless of block state
+        queue.resolveByOwner(ids, dest);
 
         (uint256[] memory origActive,) = queue.getActive(ORIG, 0, 10);
         (uint256[] memory ownrActive,) = queue.getActive(OWNR, 0, 10);
-        assertEq(origActive.length, 0, "originator's active set not pruned by resolveBySIP");
-        assertEq(ownrActive.length, 0, "owner's active set not pruned by resolveBySIP");
+        assertEq(origActive.length, 0, "originator's active set not pruned by resolveByOwner");
+        assertEq(ownrActive.length, 0, "owner's active set not pruned by resolveByOwner");
 
         // Solvency: a token that turns fee-on-transfer after escrow must still
         // trip the post-payout backstop on this leg.
@@ -611,29 +613,24 @@ contract ExitDelayQueueMutantsTest is Test {
         ids2[0] = id2;
         vm.prank(OWNER);
         vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
-        queue.resolveBySIP(ids2, dest);
+        queue.resolveByOwner(ids2, dest);
     }
 
-    /// @notice `resolveBySIP`'s bounded predicate admits a request that is
-    ///         still locked or paused OR has a blocked party — three
-    ///         independent reasons combined with OR. Every existing positive
-    ///         test for the blocked-party reason queues the request without
-    ///         warping past `unlockAt`, so the "still locked" clause alone
-    ///         already makes it resolvable; the blocked-party check itself
-    ///         (`_isBlocked`) never had to evaluate true to pass those tests,
-    ///         and could be dropped (always reading "not blocked") without
-    ///         any of them noticing.
-    function test_mutant_ExitDelayQueue_880_resolveBySIP_blocked_party_alone_is_resolvable() public {
+    /// @notice `resolveByOwner` admits a request on one condition only: a
+    ///         blacklisted party. The receiver alone, blacklisted, on an unlocked
+    ///         and unpaused request, must admit it — a check that read the
+    ///         originator and owner only would not.
+    function test_mutant_ExitDelayQueue_880_resolveByOwner_blacklisted_receiver_alone_is_resolvable() public {
         uint256 id = _queueErc20(ORIG, OWNR, RCVR);
-        vm.warp(block.timestamp + DELAY); // unlocked and unpaused: only a blocked party can admit it
+        vm.warp(block.timestamp + DELAY);
         vm.prank(ADMIN);
-        queue.freeze(RCVR);
+        queue.blacklist(RCVR);
 
         uint256[] memory ids = new uint256[](1);
         ids[0] = id;
         vm.prank(OWNER);
-        queue.resolveBySIP(ids, address(0x7EEA)); // must not revert NotResolvableBySIP
-        assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.ResolvedBySIP));
+        queue.resolveByOwner(ids, address(0x7EEA)); // must not revert NotResolvableByOwner
+        assertEq(uint256(queue.getRequest(id).status), uint256(IExitDelayQueue.ExitStatus.ResolvedByOwner));
     }
 
     /// @notice `setRecoveryRoute`'s id is a deterministic hash of the route's
@@ -891,21 +888,6 @@ contract ExitDelayQueueMutantsTest is Test {
         queue.recordReceivedNativeExit(8 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
     }
 
-    /// @notice `recoverStuckExit`'s gas floor is exactly
-    ///         `RECOVER_PAYOUT_GAS + RECOVER_GAS_FLOOR` (3,000,000 +
-    ///         200,000). The existing under-budget test supplies far less
-    ///         gas than either bound, so it cannot tell the sum from the
-    ///         difference (2,800,000): both revert. Supplying gas strictly
-    ///         between the two bounds distinguishes them — the real floor
-    ///         must still revert here.
-    function test_mutant_ExitDelayQueue_598_recoverStuckExit_gas_floor_is_the_sum() public {
-        uint256 id = _queueErc20(ORIG, OWNR, RCVR);
-        vm.warp(block.timestamp + DELAY);
-        vm.prank(OWNR);
-        vm.expectRevert(ExitDelayQueue.InsufficientGasForRecovery.selector);
-        queue.recoverStuckExit{gas: 3_100_000}(id, address(0xA17E));
-    }
-
     /// @notice `resolveToProtocol` must DECREMENT `totalEscrowed` by the
     ///         settled amount, not merely apply some operator that happens to
     ///         land on the right answer when a single request is the entire
@@ -938,20 +920,22 @@ contract ExitDelayQueueMutantsTest is Test {
         assertEq(queue.totalEscrowed(address(token)), 10 ether, "remaining escrow must be 20-10, not 20%10");
     }
 
-    /// @notice `resolveBySIP` has the same decrement requirement as
+    /// @notice `resolveByOwner` has the same decrement requirement as
     ///         `resolveToProtocol`: with a second request still outstanding
     ///         on the same token, the remaining escrow must reflect
     ///         subtraction, not an operator that only coincides with it when
     ///         a single request is the entire escrowed balance.
-    function test_mutant_ExitDelayQueue_871_resolveBySIP_decrements_by_subtraction() public {
+    function test_mutant_ExitDelayQueue_871_resolveByOwner_decrements_by_subtraction() public {
         uint256 id = _queueErc20(ORIG, OWNR, RCVR); // 10 ether
         _queueErc20(ORIG, OWNR, RCVR); // another 10 ether, same token
         assertEq(queue.totalEscrowed(address(token)), 20 ether);
 
         uint256[] memory ids = new uint256[](1);
         ids[0] = id;
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG); // admits both requests; only the first is resolved
         vm.prank(OWNER);
-        queue.resolveBySIP(ids, address(0x7EEA)); // still locked -> resolvable
+        queue.resolveByOwner(ids, address(0x7EEA));
 
         assertEq(queue.totalEscrowed(address(token)), 10 ether, "remaining escrow must be 20-10, not 20%10");
     }

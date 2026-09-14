@@ -27,7 +27,7 @@ interface IExitDelayQueue {
         Queued, //             1 — escrowed, awaiting execute / recovery
         Executed, //           2 — paid to receiver (terminal)
         ResolvedToProtocol, // 3 — Leg-2 recovery-away (terminal)
-        ResolvedBySIP //       4 — Leg-3 DAO catch-all (terminal)
+        ResolvedByOwner //     4 — Leg-3 Owner resolution (terminal)
 
     }
 
@@ -89,7 +89,7 @@ interface IExitDelayQueue {
     event ExitResolvedToProtocol(
         uint256 indexed id, bytes32 indexed routeId, address destination, uint128 amount
     );
-    event ExitResolvedBySIP(uint256 indexed id, address indexed destination, uint128 amount);
+    event ExitResolvedByOwner(uint256 indexed id, address indexed destination, uint128 amount);
     event AccountBlocked(
         address indexed account, BlockState state, uint256 indexed triggerRequestId, bytes32 reasonHash
     );
@@ -114,7 +114,7 @@ interface IExitDelayQueue {
 
     error UnregisteredSource(address caller); //  onlyAllowedSource — DISTINCT record-path halt selector
     error ActorBlocked(address actor, BlockState state); // execution-gate revert (event: AccountBlocked)
-    error NotExecutor(address caller); //         msg.sender ∉ {originator, owner}; on delivery, also the owner has no code
+    error NotExecutor(address caller); //         delivery: msg.sender ∉ {originator, owner} and the owner has no code; recovery: ∉ {originator, owner, receiver}
     error NotUnlocked(uint256 id, uint64 unlockAt);
     error QueuePaused();
     error AlreadyTerminal(uint256 id); //         status != Queued at a transition (also duplicate-batch-id)
@@ -132,7 +132,7 @@ interface IExitDelayQueue {
     error NotBlacklisted(address a); //           unblacklist / downgradeToFrozen on a non-Blacklisted address
     error NotFrozen(address a); //                unfreeze on a non-Frozen address
     error AlreadyBlacklisted(address a); //       evidence-free freeze over a Blacklisted address
-    error NotResolvableBySIP(uint256 id); //      Leg-3 bounded predicate not satisfied
+    error NotResolvableByOwner(uint256 id); //    Leg-3: no blacklisted party on the request
     error UnwrapNonWrbtc(); //                    unwrapOnDelivery set on a non-WRBTC token (guard)
     error InvalidAltReceiver(address altReceiver); // recoverStuckExit altReceiver ∈ {0,this,token,wrbtc}
     error InvalidReceiver(address receiver); //   ingress: the queue itself, or WRBTC when delivery sends native RBTC
@@ -247,14 +247,11 @@ interface IExitDelayQueue {
     ///         NEVER re-targeted (`altReceiver` is a payout-time destination only), so
     ///         request immutability and the block gate still hold.
     ///
-    ///         GAS: send this call at least 3,200,000 gas — a fixed 3,000,000
-    ///         budget for the stored-receiver attempt plus a 200,000 floor for the
-    ///         fall-through. That reservation is what stops a caller starving the
-    ///         attempt into a false bounce and redirecting a healthy exit, so an
-    ///         under-funded call reverts `InsufficientGasForRecovery` rather than
-    ///         doing anything at all. It sits comfortably inside Rootstock's block
-    ///         gas limit but well above what a wallet's own estimate suggests, so
-    ///         a caller that lets the wallet decide will be refused.
+    ///         GAS: the caller's gas limit is the budget for the stored-receiver
+    ///         attempt; a receiver that needs more is simply retried with a
+    ///         higher limit. The EVM keeps 1/64 of the remaining gas back from
+    ///         the attempt, which is what pays `altReceiver` when the receiver
+    ///         consumes everything — so supply enough for both legs.
     function recoverStuckExit(uint256 id, address altReceiver) external;
 
     // ─── Block model ─────────────────────────────────────────────
@@ -292,7 +289,7 @@ interface IExitDelayQueue {
     // Batch by-address: each reverts `EmptyIds()` on
     // an empty array, for API consistency with the by-id batch variants
     // (`executeExits` / batch `freezeFromRequest` / `resolveToProtocol` /
-    // `resolveBySIP`) — an empty batch is a caller mistake, never a silent no-op.
+    // `resolveByOwner`) — an empty batch is a caller mistake, never a silent no-op.
     function freeze(address[] calldata a) external;
     function blacklist(address[] calldata a) external;
     function unfreeze(address[] calldata a) external;
@@ -310,14 +307,14 @@ interface IExitDelayQueue {
     ///         escrowing new withdrawals. It does not stop the block levers, the
     ///         Admin-or-Owner `resolveToProtocol` (still bound to a blacklisted
     ///         originator or owner and a matching active route), or the Owner's
-    ///         `resolveBySIP` — and while paused every queued request, unlocked
-    ///         and unblocked ones included, is eligible for `resolveBySIP`.
+    ///         `resolveByOwner`, which reaches only requests with a blacklisted
+    ///         party whether or not the queue is paused.
     function setSecurityPerimeterPaused(bool p) external;
 
     // ─── Recovery ────────────────────────────────────────────────
 
     function resolveToProtocol(uint256[] calldata ids, bytes32 routeId) external;
-    function resolveBySIP(uint256[] calldata ids, address destination) external;
+    function resolveByOwner(uint256[] calldata ids, address destination) external;
 
     function setRecoveryRoute(RecoveryRoute calldata route) external returns (bytes32 routeId);
     function removeRecoveryRoute(bytes32 routeId) external;
