@@ -51,7 +51,7 @@ interface IExitDelayQueue {
         // words 2-5:
         address originator; // withdrawal caller the hook saw — block key + executor
         address owner; //      position owner — MANDATORY block key + executor
-        address receiver; //   immutable payout destination — block key iff freezeReceiver; NOT an executor
+        address receiver; //   immutable payout destination — block key iff freezeReceiver; may recover, but not a deliverer
         address token; //      address(0) = native RBTC
         // word 6:
         bytes32 surfaceId; //  provenance: recovery-route key
@@ -223,14 +223,13 @@ interface IExitDelayQueue {
     ///         hold a contract-owned request — block a recorded party to hold it.
     function executeExits(uint256[] calldata ids) external;
 
-    /// @notice Verify-by-attempting stuck-exit recovery. Callable ONLY by the
-    ///         request's originator or owner, whether or not the owner has code —
-    ///         narrower than delivery on purpose: delivery pays only the recorded
-    ///         receiver, while this call names a destination, so opening it the
-    ///         same way would let anyone take a contract-owned request whose
-    ///         receiver refuses payment. Being the recorded receiver grants no
-    ///         right to deliver or redirect: the receiver may call only when it
-    ///         is also the originator or the owner, as in a withdrawal to self.
+    /// @notice Verify-by-attempting stuck-exit recovery. Callable by the
+    ///         request's originator, its owner, or its recorded receiver,
+    ///         whether or not the owner has code. Unlike delivery, this call is
+    ///         never widened to anyone when the owner has code: delivery pays
+    ///         only the recorded receiver, while this call names a destination,
+    ///         so opening it that way would let a stranger take a contract-owned
+    ///         request whose receiver refuses payment.
     ///         Requires the request Queued, unlocked, and the queue not paused.
     ///
     ///         Attempts the STORED-receiver payout FIRST; pays `altReceiver` ONLY if

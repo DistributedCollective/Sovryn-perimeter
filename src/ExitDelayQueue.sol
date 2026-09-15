@@ -91,7 +91,7 @@ contract ExitDelayQueue is
     // Stuck-exit recovery redesign the
     // markPayoutFailed / _payoutFailed recovery marker AND the earlier
     // executeExit(id, altReceiver) redirect overload were BOTH removed. A bouncing
-    // honest recipient is handled self-service by {originator, owner} via the
+    // honest recipient is handled self-service by {originator, owner, receiver} via the
     // dedicated recoverStuckExit(id, altReceiver) leg — which attempts the STORED
     // receiver FIRST and pays altReceiver only on a genuine bounce (verify-by-
     // attempting; a healthy exit is NEVER redirected). No stored failure flag, no
@@ -520,8 +520,8 @@ contract ExitDelayQueue is
     /// @dev Stuck-exit recovery redesign.
     ///      A bouncing honest recipient is not a perimeter-specific problem (the
     ///      same withdrawal would bounce without the delay), so recovery is
-    ///      SELF-SERVICE by the frozen-metadata `{originator, owner}` set (the
-    ///      receiver is NEVER an executor) — no admin/Owner path, NO stored failure
+    ///      SELF-SERVICE by the frozen-metadata `{originator, owner, receiver}` set
+    ///      — no admin/Owner path, NO stored failure
     ///      flag, and the stored request is NEVER re-targeted (`altReceiver` is a
     ///      payout-time destination only, so + hold).
     ///
