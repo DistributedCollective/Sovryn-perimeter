@@ -14,7 +14,7 @@ import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet
 import {IExitDelayQueue} from "./interfaces/IExitDelayQueue.sol";
 
 /// @notice Minimal WRBTC (wrapped-RBTC) surface. `unwrapOnDelivery` requests
-///         hold WRBTC and unwrap to native RBTC at `executeExit` (Option B).
+///         hold WRBTC and unwrap to native RBTC at `executeExit`.
 interface IWRBTC {
     function withdraw(uint256 amount) external;
 }
@@ -88,17 +88,14 @@ contract ExitDelayQueue is
     // `forge inspect ExitDelayQueue storageLayout` before any deployment and
     // set __gap accordingly. Upgrades adding storage MUST consume from __gap.
     //
-    // Stuck-exit recovery redesign the
-    // markPayoutFailed / _payoutFailed recovery marker AND the earlier
-    // executeExit(id, altReceiver) redirect overload were BOTH removed. A bouncing
-    // honest recipient is handled self-service by {originator, owner, receiver} via the
-    // dedicated recoverStuckExit(id, altReceiver) leg — which attempts the STORED
+    // A bouncing honest recipient is handled self-service by the
+    // {originator, owner, receiver} set via the dedicated
+    // recoverStuckExit(id, altReceiver) leg — which attempts the STORED
     // receiver FIRST and pays altReceiver only on a genuine bounce (verify-by-
-    // attempting; a healthy exit is NEVER redirected). No stored failure flag, no
-    // admin/Owner recovery path, no request re-targeting. The all-four-actor
-    // block gate covers the STORED receiver so a blocked original receiver
-    // refuses recovery and falls to Leg-3. The freed marker slot returns to __gap
-    // (restoring the pre-marker layout, still 32).
+    // attempting; a healthy exit is NEVER redirected). There is no stored
+    // failure flag, no Admin/Owner recovery path, and no request re-targeting.
+    // The all-four-actor block gate covers the STORED receiver so a blocked
+    // original receiver refuses recovery and falls to Leg-3.
 
     /// @notice Fast operational guardian. Not an OZ AccessControl role —
     ///         a single stored address checked by `onlyAdminOrOwner`. MAY equal
@@ -208,12 +205,12 @@ contract ExitDelayQueue is
     }
 
     /// @notice Initialize the proxy. Deployer becomes the initial Owner; the
-    ///         bootstrap flow then `transferOwnership` → the governance Owner.
+    ///         bootstrap flow then `transferOwnership` → the Owner.
     /// @param owner_ Owner principal (0 or msg.sender ⇒ deployer stays owner).
     /// @param admin_ Fast guardian; non-zero. MAY equal the owner (
-    ///        retired, deliberate: launch shape is admin = owner
-    ///        = governance Safe; the split becomes a real authority bound only
-    ///        when ownership later moves to Bitocracy).
+    ///        deliberate: launch shape is admin = owner, both held by one
+    ///        Safe; the split becomes a real authority bound only when
+    ///        ownership later moves to Bitocracy).
     /// @param wrbtc_ Canonical WRBTC token. Must be non-zero.
     /// @param minimumDelaySeconds_ Per-request delay floor.
     /// @param initialAllowedSources Hooked source contracts.
@@ -268,7 +265,7 @@ contract ExitDelayQueue is
         if (unwrapOnDelivery && token != wrbtc) revert UnwrapNonWrbtc();
         _validateIngress(token, amount, delaySeconds, effOrig, effOwner, receiver, unwrapOnDelivery);
 
-        // ERC20 pull with receipt proof (High-3): measure before/after so a
+        // ERC20 pull with receipt proof: measure before/after so a
         // fee-on-transfer/rebasing token cannot silently mis-escrow.
         uint256 before = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -287,11 +284,10 @@ contract ExitDelayQueue is
     ///      the record CONSUMES exactly `amount` into
     ///      totalEscrowed; any excess (pre-existing dust, a force-sent/donated
     ///      1-wei, another source's surplus) stays as non-backing surplus for
-    ///      sweepSurplus and is NEVER mis-credited. The earlier `== amount` exact
-    ///      rule was donation-griefable — a 1-wei force-send permanently reverted
-    ///      every subsequent record. Because push and record are atomic in one
-    ///      outer tx, there is no interleaved-push residual to protect against,
-    ///      and a donation only RAISES the surplus, so `>= amount` still passes.
+    ///      sweepSurplus and is NEVER mis-credited. Because push and record are
+    ///      atomic in one outer tx, there is no interleaved-push residual to
+    ///      protect against, and a donation only RAISES the surplus, so
+    ///      `>= amount` still passes.
     function recordReceivedERC20Exit(
         address token,
         uint128 amount,
@@ -368,17 +364,17 @@ contract ExitDelayQueue is
     ///         Why unconditional: the real Rootstock WRBTC `withdraw()` returns
     ///         native via a 2300-gas `transfer` stipend. Any storage-slot sender
     ///         check here (SLOAD ≥ 2100 cold under EIP-2929/Paris) exceeds that
-    ///         stipend, so a sender-gated `receive()` `OutOfGas`-bricks every
+    ///         stipend, so a sender-gated `receive()` would `OutOfGas`-brick every
     ///         `unwrapOnDelivery` (native `burnToBTC`) payout after unlock —
-    ///         empirically reproduced (`ExitDelayQueueUnwrapStipend`). Dropping
-    ///         the gate is SAFE because the already neutralizes stray or
-    ///         donated native: the two measured-receipt ingress paths credit
-    ///         EXACTLY `amount` when the non-backing surplus `>= amount` and never
-    ///         mis-credit, so unsolicited RBTC (including a `selfdestruct`
-    ///         force-send the old gate could not stop anyway) only accrues as
-    ///         `sweepSurplus`-able surplus. Accepted trade-off: the queue no
-    ///         longer asserts "only ActivePool pays in native" — defense-in-depth
-    ///         the made redundant.
+    ///         pinned by `ExitDelayQueueUnwrapStipend`. Accepting unconditionally
+    ///         is safe because the measured-receipt ingress paths already
+    ///         neutralize stray or donated native: they credit EXACTLY `amount`
+    ///         when the non-backing surplus is `>= amount` and never mis-credit,
+    ///         so unsolicited RBTC — including a `selfdestruct` force-send, which
+    ///         no sender gate could stop either — only accrues as
+    ///         `sweepSurplus`-able surplus. The queue does not need to assert
+    ///         "only ActivePool pays in native": the measured-receipt credit is
+    ///         defense enough against stray native on its own.
     receive() external payable virtual {}
 
     // ─── Ingress helpers ────────────────────────────────────────────────
@@ -517,28 +513,25 @@ contract ExitDelayQueue is
     // ─── Stuck-exit recovery — verify-by-attempting redirect leg ──
 
     /// @inheritdoc IExitDelayQueue
-    /// @dev Stuck-exit recovery redesign.
-    ///      A bouncing honest recipient is not a perimeter-specific problem (the
+    /// @dev A bouncing honest recipient is not a perimeter-specific problem (the
     ///      same withdrawal would bounce without the delay), so recovery is
-    ///      SELF-SERVICE by the frozen-metadata `{originator, owner, receiver}` set
-    ///      — no admin/Owner path, NO stored failure
-    ///      flag, and the stored request is NEVER re-targeted (`altReceiver` is a
-    ///      payout-time destination only, so + hold).
+    ///      SELF-SERVICE by the `{originator, owner, receiver}` set — no
+    ///      Admin/Owner path, no stored failure flag, and the stored request is
+    ///      NEVER re-targeted (`altReceiver` is a payout-time destination only).
     ///
     ///      VERIFY-BY-ATTEMPTING: after CEI (status → Executed, escrow decremented,
     ///      sets pruned), the STORED-receiver payout is attempted FIRST. If it
     ///      SUCCEEDS, that is the payout and `altReceiver` is unused — a HEALTHY
-    ///      exit is NEVER redirected (no arbitrary redirect; Model-B stays
-    ///      rejected). Only if the stored-receiver payout genuinely REVERTS do we
-    ///      pay `altReceiver`; if `altReceiver` also fails, the whole call reverts
-    ///      and the funds stay Queued (CEI rollback).
+    ///      exit is NEVER redirected. Only if the stored-receiver payout genuinely
+    ///      REVERTS do we pay `altReceiver`; if `altReceiver` also fails, the whole
+    ///      call reverts and the funds stay Queued (CEI rollback).
     ///
     ///      ALL-FOUR-ACTOR block gate: none of `{originator, owner, STORED
     ///      receiver, altReceiver}` may be Frozen/Blacklisted. Gating the STORED
-    ///      receiver is the must-fix — a blocked/hacked original receiver refuses
-    ///      recovery entirely (this leg can never move its funds), keeping the
-    ///      blacklist-trap and the / receiver-only dead-end intact (that case
-    ///      is Leg-3's). `altReceiver` is guarded: not 0/this/token/wrbtc.
+    ///      receiver means a blocked/hacked original receiver refuses recovery
+    ///      entirely (this leg can never move its funds) and falls to Leg-3
+    ///      instead of reaching a receiver-only dead end. `altReceiver` is
+    ///      guarded: not 0/this/token/wrbtc.
     function recoverStuckExit(uint256 id, address altReceiver) external nonReentrant {
         if (securityPerimeterPaused) revert QueuePaused();
         ExitRequest storage r = _requests[id];
@@ -1024,7 +1017,8 @@ contract ExitDelayQueue is
     /// @inheritdoc IExitDelayQueue
     /// @dev Moves EXACTLY the non-backing surplus (balanceOf − totalEscrowed);
     ///      provably never touches escrowed backing via the post-sweep solvency
-    ///      require. Unlocks the equality form of /.
+    ///      require, which uses a strict `<` so a post-sweep balance exactly
+    ///      equal to `escrowed` still passes.
     function sweepSurplus(address token, address to) external nonReentrant onlyOwner {
         if (to == address(0)) revert SweepToZero();
         uint256 escrowed = _totalEscrowed[token];
@@ -1063,7 +1057,7 @@ contract ExitDelayQueue is
         if (token == address(0)) {
             Address.sendValue(payable(to), amount);
         } else if (unwrap) {
-            // WRBTC-escrowed: unwrap to native, then send native (Option B).
+            // WRBTC-escrowed: unwrap to native, then send native.
             IWRBTC(token).withdraw(amount);
             Address.sendValue(payable(to), amount);
         } else {
@@ -1221,7 +1215,7 @@ contract ExitDelayQueue is
     }
 
     // `admin == owner` is a supported shape and nothing here enforces a
-    // separation: at launch one governance Safe holds both roles. The
+    // separation: at launch one Safe holds both roles. The
     // consequence is accepted — while the roles coincide the Leg-2/Leg-3
     // authority split and its bounds are vacuous, and they become real only
     // once ownership moves to Bitocracy while the guardian stays put.

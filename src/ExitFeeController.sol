@@ -9,7 +9,7 @@ import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet
 import {IExitFeeController} from "./interfaces/IExitFeeController.sol";
 
 /// @title  ExitFeeController
-/// @notice Governance-owned resolver for ExitFee (Perimeter) policy. Three
+/// @notice Owner-controlled resolver for Perimeter fee policy. Three
 ///         RatePolicy tiers per surface: actor → sub-product → surface.
 ///         Most-specific *active* entry wins; the surface itself gates the
 ///         surface (if its `active` flag is false, overrides do not apply).
@@ -19,7 +19,7 @@ import {IExitFeeController} from "./interfaces/IExitFeeController.sol";
 // The `payable` flag aderyn flags comes from UUPSUpgradeable.upgradeToAndCall;
 // it forwards msg.value to the new impl's initializer if any. The function is
 // owner-gated by _authorizeUpgrade below, so the only way the gas token could reach
-// this contract is if governance deliberately attaches value to an upgrade
+// this contract is if the Owner deliberately attaches value to an upgrade
 // call. The controller itself has no payable user surface and no `receive()`.
 // aderyn-ignore-next-line(contract-locks-ether)
 contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable, Ownable2StepUpgradeable {
@@ -301,7 +301,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     }
 
     // `admin == owner` is a supported shape and nothing here enforces a
-    // separation: at launch one governance Safe holds both roles. The queue
+    // separation: at launch one Safe holds both roles. The queue
     // says the same about its own pair of roles.
 
     /// @notice Appoint (or rotate) the operational guardian checked by
@@ -334,7 +334,7 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     ///         proxy). Required before the system can charge: with the
     ///         receiver unset, quotes return `DISABLED` even when enabled.
     ///         Admin-or-owner so the fee leg can be re-pointed (e.g. to a
-    ///         replacement vault) without waiting on governance.
+    ///         replacement vault) without needing an Owner-only action.
     /// @param  newReceiver Non-zero address that receives every fee leg.
     // aderyn-ignore-next-line(centralization-risk)
     function setFeeReceiver(address newReceiver) external onlyAdminOrOwner {
