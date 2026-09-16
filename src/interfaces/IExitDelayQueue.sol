@@ -7,10 +7,9 @@ pragma solidity 0.8.20;
 ///         configurable delay so a detected theft can be blocked (frozen or
 ///         blacklisted) and routed to recovery before the funds leave.
 ///
-///         Authoritative build spec:
-///         This interface mirrors the
-///         complete function catalog and the event/error catalog; the
-///         types mirror
+///         This interface mirrors `ExitDelayQueue`'s complete function
+///         catalog and its event and error catalog; the types mirror the
+///         queue's own struct and enum declarations.
 ///
 ///         Types (enums/structs) are declared here so cross-pragma callers
 ///         and off-chain tooling share one source of truth. The queue itself
@@ -58,7 +57,7 @@ interface IExitDelayQueue {
         // word 7 (160 + 8 + 8 = 176 bits):
         address subProduct; // provenance: iToken / converter / address(0)
         ExitStatus status; //  uint8
-        bool unwrapOnDelivery; //  Option B: queue holds WRBTC, executeExit unwraps → native RBTC
+        bool unwrapOnDelivery; //  when true, the queue holds WRBTC and executeExit unwraps it to native RBTC
     }
 
     /// @notice A pre-approved Leg-2 recovery route. `routeId` is
@@ -108,7 +107,7 @@ interface IExitDelayQueue {
     event MinimumDelaySet(uint32 seconds_);
     event SecurityPerimeterPausedSet(bool paused);
     event NativePusherSet(address indexed pusher);
-    event SurplusSwept(address indexed token, address indexed to, uint256 amount); //
+    event SurplusSwept(address indexed token, address indexed to, uint256 amount);
 
     // ─── Custom errors ───────────────────────────────────────────
 
@@ -234,17 +233,17 @@ interface IExitDelayQueue {
     ///
     ///         Attempts the STORED-receiver payout FIRST; pays `altReceiver` ONLY if
     ///         the stored-receiver payout genuinely bounces — so a HEALTHY exit is
-    ///         never redirected (no arbitrary redirect; Model-B stays rejected)
-    ///         and there is NO stored failure flag. If `altReceiver` also fails, the
-    ///         whole call reverts (funds stay Queued).
+    ///         never redirected and there is NO stored failure flag. If
+    ///         `altReceiver` also fails, the whole call reverts (funds stay Queued).
     ///
     ///         Block gate covers ALL FOUR actors — `{originator, owner, STORED
     ///         receiver, altReceiver}`: a blocked/hacked original receiver refuses
-    ///         recovery entirely (→ Leg-3), preserving the blacklist-trap and
-    ///         the / dead-end. `altReceiver` is guarded: reverts if it is
-    ///         `0`, this contract, the request token, or WRBTC. The stored request is
-    ///         NEVER re-targeted (`altReceiver` is a payout-time destination only), so
-    ///         request immutability and the block gate still hold.
+    ///         recovery entirely (→ Leg-3), preserving the blacklist trap and
+    ///         leaving no receiver-only dead end. `altReceiver` is guarded: reverts
+    ///         if it is `0`, this contract, the request token, or WRBTC. The stored
+    ///         request is NEVER re-targeted (`altReceiver` is a payout-time
+    ///         destination only), so request immutability and the block gate still
+    ///         hold.
     ///
     ///         GAS: the caller's gas limit is the budget for the stored-receiver
     ///         attempt; a receiver that needs more is simply retried with a
@@ -260,6 +259,7 @@ interface IExitDelayQueue {
 
     // Batch by-request-id — whole-batch atomic (one bad
     // id reverts all, like executeExits); last-write-wins trigger/reason per
+    // address when the same address is blocked by more than one id in the batch.
     function freezeFromRequest(uint256[] calldata requestIds, bool freezeReceiver, bytes32 reasonHash)
         external;
     function blacklistFromRequest(uint256[] calldata requestIds, bool freezeReceiver, bytes32 reasonHash)
