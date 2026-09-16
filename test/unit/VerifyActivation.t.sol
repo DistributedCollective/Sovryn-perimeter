@@ -8,6 +8,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {ExitFeeController} from "../../src/ExitFeeController.sol";
 import {ExitDelayQueue} from "../../src/ExitDelayQueue.sol";
 import {IExitDelayQueueHost} from "../../src/interfaces/IExitDelayQueueHost.sol";
+import {IExitFeeControllerHost} from "../../src/interfaces/IExitFeeControllerHost.sol";
 import {VerifyActivation} from "../../script/06_VerifyActivation.s.sol";
 
 /// @dev Test harness exposing the internal host-resolution helpers so the C1
@@ -54,13 +55,19 @@ contract MockWRBTC is ERC20 {
     receive() external payable {}
 }
 
-/// @dev Minimal product-host stand-in implementing the `setExitDelayQueue` pointer
-///       so the C2 wiring assertions can be driven end-to-end.
-contract MockProductHost is IExitDelayQueueHost {
+/// @dev Minimal product-host stand-in implementing the `setExitDelayQueue` and
+///       `exitFeeController` pointers so the C2 wiring assertions (queue AND
+///       controller) can be driven end-to-end.
+contract MockProductHost is IExitDelayQueueHost, IExitFeeControllerHost {
     address public exitDelayQueue;
+    address public exitFeeController;
 
     function setExitDelayQueue(address queue) external override {
         exitDelayQueue = queue;
+    }
+
+    function setExitFeeController(address controller) external {
+        exitFeeController = controller;
     }
 }
 
@@ -122,8 +129,10 @@ contract VerifyActivationTest is Test {
         );
         queue = ExitDelayQueue(payable(address(new ERC1967Proxy(address(qImpl), qInit))));
 
-        // Wire the host's queue pointer at THIS queue (C2 default: wired).
+        // Wire the host's queue and controller pointers at THIS queue/controller
+        // (C2 default: wired).
         host.setExitDelayQueue(address(queue));
+        host.setExitFeeController(address(controller));
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────────
@@ -338,12 +347,36 @@ contract VerifyActivationTest is Test {
         _verify();
     }
 
+    /// Host's controller pointer points at a DIFFERENT controller (or is unset):
+    /// fail-open zero-fee/zero-delay. This is the case a wiring check limited to
+    /// the queue pointer would miss entirely — the host still pays through the
+    /// queue when delayed, but every exit is quoted by the wrong (or no)
+    /// controller, so the fee and the delay it would have imposed are silently
+    /// skipped.
+    function test_verify_reverts_when_host_controller_not_wired() public {
+        _makeFullyCorrect();
+        // Re-point the host's controller pointer at a controller that is not the
+        // deployed one (mis-wired w.r.t. THIS controller).
+        host.setExitFeeController(address(0xDEAD));
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "C2: host ",
+                    vm.toString(address(host)),
+                    " not wired -- host.exitFeeController() != controller (fail-open zero-fee/zero-delay)"
+                )
+            )
+        );
+        _verify();
+    }
+
     /// Host wired at THIS queue but NOT registered as an allowed-source: bricked
     /// fail-closed (its record*() would revert UnregisteredSource).
     function test_verify_reverts_when_host_wired_but_not_allowed_source() public {
         // Deploy a SECOND host that is wired but never registered as a source.
         MockProductHost unregHost = new MockProductHost();
         unregHost.setExitDelayQueue(address(queue));
+        unregHost.setExitFeeController(address(controller));
         _makeFullyCorrect();
 
         address[] memory hs = new address[](1);
@@ -566,6 +599,7 @@ contract VerifyActivationTest is Test {
         );
         queue = ExitDelayQueue(payable(address(new ERC1967Proxy(address(qImpl), qInit))));
         host.setExitDelayQueue(address(queue));
+        host.setExitFeeController(address(controller));
     }
 
     /// A zero `minimumDelaySeconds` FLOOR is NOT a go-live blocker: with a positive
@@ -598,6 +632,7 @@ contract VerifyActivationTest is Test {
     function test_verify_passes_with_multiple_hosts() public {
         MockProductHost host2 = new MockProductHost();
         host2.setExitDelayQueue(address(queue));
+        host2.setExitFeeController(address(controller));
         vm.prank(QUEUE_OWNER);
         queue.addAllowedSource(address(host2));
 
@@ -635,6 +670,7 @@ contract VerifyActivationTest is Test {
     function _makeWiredRecordingHost() internal returns (MockProductHost h) {
         h = new MockProductHost();
         h.setExitDelayQueue(address(queue));
+        h.setExitFeeController(address(controller));
         vm.prank(QUEUE_OWNER);
         queue.addAllowedSource(address(h));
     }
@@ -646,6 +682,7 @@ contract VerifyActivationTest is Test {
         MockProductHost registered = _makeWiredRecordingHost();
         MockProductHost missed = new MockProductHost();
         missed.setExitDelayQueue(address(queue)); // wired, but never allow-listed
+        missed.setExitFeeController(address(controller));
         _makeFullyCorrect();
 
         address[] memory hs = new address[](3);
@@ -779,6 +816,7 @@ contract VerifyActivationTest is Test {
     function _makeSecondWiredHost() internal returns (MockProductHost h2) {
         h2 = new MockProductHost();
         h2.setExitDelayQueue(address(queue));
+        h2.setExitFeeController(address(controller));
         vm.prank(QUEUE_OWNER);
         queue.addAllowedSource(address(h2));
     }

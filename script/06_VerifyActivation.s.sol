@@ -8,6 +8,7 @@ import {stdJson} from "forge-std/StdJson.sol";
 import {ExitFeeController} from "../src/ExitFeeController.sol";
 import {ExitDelayQueue} from "../src/ExitDelayQueue.sol";
 import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
+import {IExitFeeControllerHost} from "../src/interfaces/IExitFeeControllerHost.sol";
 
 /// @title  Verify Activation — activation step-7 go-live gate (C1/C2)
 /// @notice READ-ONLY. Run LAST, AFTER the Owner has configured the controller's
@@ -51,7 +52,8 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///           (C1)    queue.owner()      == intendedOwner != deployer
 ///                   controller.owner() == intendedOwner != deployer   -- ownership
 ///           (C2)    for each intended host:
-///                     host.exitDelayQueue() == queue                    -- wired
+///                     host.exitDelayQueue() == queue                    -- queue wired
+///                     host.exitFeeController() == controller            -- controller wired
 ///                     queue.isAllowedSource(host)                       -- allowed-source
 ///
 ///         C1 host-input safety: both spec-named product hosts are
@@ -387,8 +389,9 @@ contract VerifyActivation is Script {
     ///           - sub-floor delay        -> "...: controller.globalDelaySeconds() < ...floor..."
     ///           - owner still deployer   -> "...(C1): queue/controller.owner() == deployer..."
     ///           - owner != intended      -> "...(C1): queue/controller.owner() != the intended Owner..."
-    ///           - host not wired         -> "...(C2): host <addr> not wired..."
-    ///           - host not allowed-src   -> "...(C2): host <addr> not allowed-source..."
+    ///           - host queue not wired      -> "...(C2): host <addr> not wired -- host.exitDelayQueue()..."
+    ///           - host controller not wired -> "...(C2): host <addr> not wired -- host.exitFeeController()..."
+    ///           - host not allowed-src      -> "...(C2): host <addr> not allowed-source..."
     ///
     /// @param controller       the deployed ExitFeeController proxy
     /// @param queue            the deployed ExitDelayQueue proxy
@@ -423,7 +426,7 @@ contract VerifyActivation is Script {
         _verifyFloor(controller, queue);
         _verifyNotPaused(queue);
         _verifyOwnership(controller, queue, intendedOwner, deployer);
-        _verifyWiring(queue, hosts);
+        _verifyWiring(controller, queue, hosts);
     }
 
     // ── The queue must not be left paused. A paused queue keeps escrowing
@@ -518,11 +521,17 @@ contract VerifyActivation is Script {
     }
 
     // ── C2: wiring. Every intended host must (i) point its queue pointer at THIS
-    //    queue (else that surface pays direct at zero-delay = fail-OPEN) AND (ii) be
-    //    a registered allowed-source (else its records revert UnregisteredSource =
-    //    bricked fail-CLOSED). Both mis-states must be caught before enabling. The
-    //    revert names the specific host address for a fast fix. ──
-    function _verifyWiring(ExitDelayQueue queue, address[] memory hosts) internal view {
+    //    queue (else that surface pays direct at zero-delay = fail-OPEN), (ii) point
+    //    its controller pointer at THIS controller (else that surface quotes no fee
+    //    and no delay and pays direct = fail-OPEN, per PerimeterLib.safeControllerLookup),
+    //    AND (iii) be a registered allowed-source (else its records revert
+    //    UnregisteredSource = bricked fail-CLOSED). All three mis-states must be
+    //    caught before enabling. The revert names the specific host address for a
+    //    fast fix. ──
+    function _verifyWiring(ExitFeeController controller, ExitDelayQueue queue, address[] memory hosts)
+        internal
+        view
+    {
         for (uint256 i; i < hosts.length; i++) {
             address host = hosts[i];
             // (defensive: a zero host is never an intended host — _resolveHosts
@@ -536,6 +545,14 @@ contract VerifyActivation is Script {
                     "C2: host ",
                     vm.toString(host),
                     " not wired -- host.exitDelayQueue() != queue (fail-open zero-delay)"
+                )
+            );
+            require(
+                IExitFeeControllerHost(host).exitFeeController() == address(controller),
+                string.concat(
+                    "C2: host ",
+                    vm.toString(host),
+                    " not wired -- host.exitFeeController() != controller (fail-open zero-fee/zero-delay)"
                 )
             );
             require(
