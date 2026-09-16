@@ -404,7 +404,7 @@ contract ExitDelayQueueTest is Test {
 
     function test_initialize_admin_may_equal_owner() public {
         //  admin == owner is a
-        // supported shape (the governance Safe holds both roles at launch).
+        // supported shape (the same multisig holds both roles at launch).
         ExitDelayQueue impl = new ExitDelayQueue();
         address[] memory s = new address[](0);
         bytes memory init = abi.encodeWithSelector(
@@ -2346,7 +2346,7 @@ contract ExitDelayQueueTest is Test {
     // ── Admin == Owner supported (chokepoint retired) ──
 
     /// @dev The 2-step handoff to the current Admin now succeeds and merges the
-    ///      roles — a deliberate decision (launch shape: governance Safe holds
+    ///      roles — a deliberate decision (launch shape: the same multisig holds
     ///      both). While merged, the Leg-2/Leg-3 split is intentionally
     ///      vacuous; it becomes real when ownership moves to Bitocracy.
     function test_transferOwnership_to_admin_then_accept_merges_roles() public {

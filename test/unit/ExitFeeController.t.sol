@@ -617,7 +617,7 @@ contract ExitFeeControllerTest is Test {
 
     function test_removeSubProductPolicy_idempotent_when_absent() public {
         // No prior setSubProductPolicy -- remove must succeed silently
-        // (no event, no revert) so governance retire flows compose.
+        // (no event, no revert) so the Owner's retire flows compose.
         vm.recordLogs();
         vm.prank(ADMIN);
         controller.removeSubProductPolicy(SURFACE, IWRBTC);
@@ -1222,7 +1222,7 @@ contract ExitFeeControllerTest is Test {
 
     function test_setAdmin_may_equal_owner() public {
         //  admin == owner is a
-        // supported shape (the governance Safe holds both roles at launch).
+        // supported shape (the same multisig holds both roles at launch).
         vm.prank(ADMIN);
         controller.setAdmin(ADMIN); // ADMIN is the owner here
         assertEq(controller.admin(), ADMIN);
@@ -1397,7 +1397,7 @@ contract ExitFeeControllerTest is Test {
     //
     // The `_transferOwnership` chokepoint and setAdmin's
     // owner-equality check were removed by team decision: at launch the
-    // governance Safe holds BOTH roles. These pin the new behavior: role
+    // same multisig holds BOTH roles. These pin the new behavior: role
     // merges via the 2-step handoff succeed, and normal rotations are
     // unaffected.
 
