@@ -282,6 +282,29 @@ contract ExitDelayQueueInvariant is Test {
         assertEq(handler.recoveredPayouts(), 2, "receiver-only stuck-exit recovery never paid out");
         assertGt(handler.paidTotal(), paidBeforeByReceiver, "receiver recovery payout never reached the ledger");
 
+        // Non-vacuity for the two single-authority recovery paths. The two
+        // recoveries above all used a caller matching both originator AND
+        // owner at once (or the receiver, proven separately), so they cannot
+        // tell which of the originator check or the owner check is doing the
+        // authorizing - removing either alone would still pass through the
+        // surviving one. These two requests give originator and owner
+        // distinct addresses and recover each with a caller that matches
+        // only one of the two, so each call is authorized by exactly the
+        // check it is meant to prove.
+        handler.recordErc20(uint128(1e18), 0, 1, 0); // orig=actors[1], owner=actors[0], receiver=actors[2]
+        uint256 paidBeforeByOriginator = handler.paidTotal();
+        handler.recoverStuck(6, 4); // liveIds[6]; caller = actors[1], the originator - not the owner
+        assertEq(handler.recoveredPayouts(), 3, "originator-only stuck-exit recovery never paid out");
+        assertGt(
+            handler.paidTotal(), paidBeforeByOriginator, "originator recovery payout never reached the ledger"
+        );
+
+        handler.recordErc20(uint128(1e18), 0, 2, 1); // orig=actors[2], owner=actors[1], receiver=actors[0]
+        uint256 paidBeforeByOwner = handler.paidTotal();
+        handler.recoverStuck(7, 4); // liveIds[7]; caller = actors[1], the owner - not the originator
+        assertEq(handler.recoveredPayouts(), 4, "owner-only stuck-exit recovery never paid out");
+        assertGt(handler.paidTotal(), paidBeforeByOwner, "owner recovery payout never reached the ledger");
+
         // A release attempted while the perimeter is paused.
         handler.pause(true);
         handler.execute(2, 0);
