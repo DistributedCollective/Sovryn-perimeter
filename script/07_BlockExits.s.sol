@@ -49,14 +49,24 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///         OPPOSITE action - it makes exits pay out directly, with no delay and
 ///         no queue. It is a liveness escape, not an incident lever.
 ///
-///         BY-REQUEST MODE resolves each request's `originator` and `owner` (and
-///         its `receiver` when `BLOCK_FREEZE_RECEIVER=true`) and blocks all of
-///         them in one transaction. That is the speed lever: given a list of
-///         malicious request ids from the watcher, it blocks every party behind
-///         them without the operator transcribing addresses under pressure. The
-///         on-chain batch is atomic - one unknown id reverts the whole call - so
-///         unknown ids are rejected here rather than after signatures are
-///         collected.
+///         BY-REQUEST MODE resolves each request's `originator` and `owner`, then
+///         splits the ids into a CLEAN group (neither is already frozen or
+///         blacklisted) and a HELD group (at least one of them already is). Only
+///         a clean request's `receiver` is blocked alongside it - a request that
+///         already has a blocked party is left with its receiver untouched,
+///         because a blocked actor can set up an honest-looking receiver to move
+///         funds through it. `freeze` sends only the clean group: a held request
+///         is already covered by its existing block, so freezing it again would
+///         change nothing, and the script skips it rather than submit a no-op;
+///         it refuses outright when every id resolves to the held group.
+///         `blacklist` sends both groups - it escalates a held party the same as
+///         a clean one, just without its receiver. This is the speed lever:
+///         given a list of malicious request ids from the watcher, it blocks
+///         every clean party behind them, correctly holding receivers back where
+///         they should be, without the operator transcribing addresses or
+///         judging a receiver under pressure. The on-chain batch is atomic - one
+///         unknown id reverts the whole call - so unknown ids are rejected here
+///         rather than after signatures are collected.
 ///
 /// @dev Usage:
 ///
@@ -73,21 +83,21 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///   export BLOCK_ACTORS=0xaaa,0xbbb          # addresses to block or clear
 ///   export BLOCK_REQUEST_IDS=41,42,43        # resolve the parties behind these requests
 ///
-///   export BLOCK_FREEZE_RECEIVER=true        # by-request only; also block the payout address
-///   export BLOCK_REASON="incident 2026-08-20"  # by-request only; hashed into the event
+///   export BLOCK_REASON="incident label"     # by-request only; hashed into the event
 ///
 ///   forge script script/07_BlockExits.s.sol --rpc-url $RPC
 ///
 ///   Then submit the printed calldata from the Admin Safe and re-run with the
 ///   verify action the preview prints. The multisig reports success even when
 ///   the call inside it failed, so the state is read back rather than assumed:
-///   `verify-freeze`, `verify-blacklist`, `verify-downgrade`, `verify-unfreeze`
-///   and `verify-unblacklist` each read the parties' block states and refuse
-///   unless every one of them matches (keep BLOCK_ACTORS or BLOCK_REQUEST_IDS
-///   set); `verify-pause` and `verify-unpause` read the pause state;
-///   `verify-disable-perimeter` and `verify-enable-perimeter` read the delay
-///   switch and its length. Each verify-* action refuses unless the state
-///   matches the call.
+///   `verify-freeze` and `verify-blacklist` read every resolved request's
+///   parties back - the clean group's receiver must now read blocked, and the
+///   held group's receiver must still read untouched; `verify-downgrade`,
+///   `verify-unfreeze` and `verify-unblacklist` read the block states of the
+///   named addresses (keep BLOCK_ACTORS or BLOCK_REQUEST_IDS set); `verify-pause`
+///   and `verify-unpause` read the pause state; `verify-disable-perimeter` and
+///   `verify-enable-perimeter` read the delay switch and its length. Each
+///   verify-* action refuses unless the state matches the call.
 contract BlockExits is Script {
     ExitDelayQueue internal queue;
     ExitFeeController internal controller;
@@ -102,7 +112,6 @@ contract BlockExits is Script {
             vm.envString("BLOCK_ACTION"),
             vm.envOr("BLOCK_ACTORS", ",", new address[](0)),
             vm.envOr("BLOCK_REQUEST_IDS", ",", new uint256[](0)),
-            vm.envOr("BLOCK_FREEZE_RECEIVER", false),
             vm.envOr("BLOCK_REASON", string(""))
         );
     }
@@ -122,7 +131,6 @@ contract BlockExits is Script {
         string memory action,
         address[] memory actors,
         uint256[] memory ids,
-        bool freezeReceiver,
         string memory reason
     ) internal view {
         console2.log("=== Perimeter: block exits ===");
@@ -139,9 +147,9 @@ contract BlockExits is Script {
         } else if (a == keccak256("unpause")) {
             _pause(false);
         } else if (a == keccak256("freeze")) {
-            _blockActors(true, actors, ids, freezeReceiver, reason);
+            _blockActors(true, actors, ids, reason);
         } else if (a == keccak256("blacklist")) {
-            _blockActors(false, actors, ids, freezeReceiver, reason);
+            _blockActors(false, actors, ids, reason);
         } else if (a == keccak256("downgrade")) {
             _downgrade(actors, ids);
         } else if (a == keccak256("unfreeze")) {
@@ -149,15 +157,15 @@ contract BlockExits is Script {
         } else if (a == keccak256("unblacklist")) {
             _clear(false, actors, ids);
         } else if (a == keccak256("verify-freeze")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen, true);
+            _verify(actors, ids, IExitDelayQueue.BlockState.Frozen, true);
         } else if (a == keccak256("verify-blacklist")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Blacklisted, true);
+            _verify(actors, ids, IExitDelayQueue.BlockState.Blacklisted, true);
         } else if (a == keccak256("verify-downgrade")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen, false);
+            _verify(actors, ids, IExitDelayQueue.BlockState.Frozen, false);
         } else if (a == keccak256("verify-unfreeze")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None, false);
+            _verify(actors, ids, IExitDelayQueue.BlockState.None, false);
         } else if (a == keccak256("verify-unblacklist")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None, false);
+            _verify(actors, ids, IExitDelayQueue.BlockState.None, false);
         } else if (a == keccak256("verify-pause")) {
             _verifyPause(true);
         } else if (a == keccak256("verify-unpause")) {
@@ -185,18 +193,30 @@ contract BlockExits is Script {
             return;
         }
         if (on) {
-            console2.log("Stops executeExit, executeExits and recoverStuckExit for every caller - the originator, the");
+            console2.log(
+                "Stops executeExit, executeExits and recoverStuckExit for every caller - the originator, the"
+            );
             console2.log("owner, and anyone delivering a contract-owned request. New exits keep escrowing.");
-            console2.log("Still live, and still paying out: the Admin-or-Owner resolveToProtocol (a blacklisted");
-            console2.log("originator or owner with a matching active route) and the Owner's resolveByOwner, which");
-            console2.log("reaches only requests with a blacklisted party, paused or not. The block levers, Owner");
+            console2.log(
+                "Still live, and still paying out: the Admin-or-Owner resolveToProtocol (a blacklisted"
+            );
+            console2.log(
+                "originator or owner with a matching active route) and the Owner's resolveByOwner, which"
+            );
+            console2.log(
+                "reaches only requests with a blacklisted party, paused or not. The block levers, Owner"
+            );
             console2.log("configuration and sweepSurplus are unaffected.");
         } else {
-            console2.log("Resumes executeExit, executeExits and recoverStuckExit. Per-actor blocks are unaffected.");
+            console2.log(
+                "Resumes executeExit, executeExits and recoverStuckExit. Per-actor blocks are unaffected."
+            );
             console2.log("resolveByOwner is unchanged: it reaches only requests with a blacklisted party.");
         }
         _emitCalldata(
-            address(queue), abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)), on ? "pause" : "unpause"
+            address(queue),
+            abi.encodeCall(IExitDelayQueue.setSecurityPerimeterPaused, (on)),
+            on ? "pause" : "unpause"
         );
     }
 
@@ -242,8 +262,10 @@ contract BlockExits is Script {
         }
         console2.log(
             enabled
-                ? "Switches the withdrawal delay back on: every hooked withdrawal that is not exempt is held for the global delay length again. The Perimeter fee has its own switch."
-                : "LIVENESS ESCAPE: every hooked withdrawal pays straight out - nothing is held, nothing escrows. The Perimeter fee has its own switch. Already-escrowed funds stay held in the queue."
+                ?
+                "Switches the withdrawal delay back on: every hooked withdrawal that is not exempt is held for the global delay length again. The Perimeter fee has its own switch."
+                :
+                "LIVENESS ESCAPE: every hooked withdrawal pays straight out - nothing is held, nothing escrows. The Perimeter fee has its own switch. Already-escrowed funds stay held in the queue."
         );
         _emitCalldata(
             address(controller),
@@ -255,50 +277,38 @@ contract BlockExits is Script {
     // --- Per-actor block ------------------------------------------------
 
     /// @dev `freezing == false` means blacklist. Actor mode and by-request mode
-    ///      build different calls; both are previewed the same way.
+    ///      build calls differently enough - one flat call against another that
+    ///      may split into two - that each gets its own function; both are
+    ///      previewed with the same vocabulary.
     function _blockActors(
         bool freezing,
         address[] memory actorsIn,
         uint256[] memory ids,
-        bool freezeReceiver,
         string memory reason
     ) internal view {
-        address[] memory actors;
-        bytes memory data;
-
         if (ids.length > 0) {
             require(
                 actorsIn.length == 0,
                 "set BLOCK_ACTORS or BLOCK_REQUEST_IDS, not both - they build different calls"
             );
-            bytes32 reasonHash = _reasonHash(reason);
-            actors = _partiesBehind(ids, freezeReceiver);
-            data = freezing
-                ? abi.encodeWithSignature(
-                    "freezeFromRequest(uint256[],bool,bytes32)", ids, freezeReceiver, reasonHash
-                )
-                : abi.encodeWithSignature(
-                    "blacklistFromRequest(uint256[],bool,bytes32)", ids, freezeReceiver, reasonHash
-                );
-            console2.log("freezeReceiver       :", freezeReceiver);
-            console2.log("reason hash          :", vm.toString(reasonHash));
-            console2.log("");
-        } else {
-            actors = actorsIn;
-            require(actors.length > 0, "set BLOCK_ACTORS or BLOCK_REQUEST_IDS");
-            data = freezing
-                ? abi.encodeWithSignature("freeze(address[])", actors)
-                : abi.encodeWithSignature("blacklist(address[])", actors);
+            _blockByRequest(freezing, ids, reason);
+            return;
         }
+        _blockByAddress(freezing, actorsIn);
+    }
+
+    /// @dev Flat block by address. No request evidence rides on this call, so a
+    ///      freeze over an already-blacklisted address is a caller mistake the
+    ///      queue reverts on (`AlreadyBlacklisted`) - refused here instead,
+    ///      while it costs nothing.
+    function _blockByAddress(bool freezing, address[] memory actors) internal view {
+        require(actors.length > 0, "set BLOCK_ACTORS or BLOCK_REQUEST_IDS");
+        bytes memory data = freezing
+            ? abi.encodeWithSignature("freeze(address[])", actors)
+            : abi.encodeWithSignature("blacklist(address[])", actors);
 
         IExitDelayQueue.BlockState target =
             freezing ? IExitDelayQueue.BlockState.Frozen : IExitDelayQueue.BlockState.Blacklisted;
-
-        // A by-request call carries a trigger and a reason, which is what lets
-        // the queue accept it over an already-blacklisted party (it holds the
-        // stronger state and records the evidence). The flat by-address call
-        // carries neither, so the same shape REVERTS there.
-        bool carriesEvidence = ids.length > 0;
 
         uint256 changing;
         bool wouldRevert;
@@ -306,20 +316,13 @@ contract BlockExits is Script {
             IExitDelayQueue.BlockState from = queue.blockStateOf(actors[i]);
             IExitDelayQueue.BlockState to = target;
             string memory note;
-            if (
-                from == IExitDelayQueue.BlockState.Blacklisted && target == IExitDelayQueue.BlockState.Frozen
-            ) {
+            if (from == IExitDelayQueue.BlockState.Blacklisted && target == IExitDelayQueue.BlockState.Frozen)
+            {
                 to = from;
-                if (carriesEvidence) {
-                    note = "already blacklisted - holds the stronger state, evidence refreshed";
-                } else {
-                    note = "WOULD REVERT (already blacklisted - use BLOCK_ACTION=downgrade)";
-                    wouldRevert = true;
-                }
+                note = "WOULD REVERT (already blacklisted - use BLOCK_ACTION=downgrade)";
+                wouldRevert = true;
             } else if (from == target) {
-                note = carriesEvidence
-                    ? "already in this state (evidence refreshed, no state change)"
-                    : "already in this state (no state change, recorded evidence kept)";
+                note = "already in this state (no state change, recorded evidence kept)";
             } else {
                 note = "WILL CHANGE";
                 ++changing;
@@ -343,6 +346,80 @@ contract BlockExits is Script {
             console2.log("NOTE: no state changes. The call still succeeds and re-emits AccountBlocked.");
         }
         _emitCalldata(address(queue), data, freezing ? "freeze" : "blacklist");
+    }
+
+    /// @dev By-request block. Splits `ids` into a CLEAN group (originator and
+    ///      owner both unblocked) and a HELD group (at least one of them
+    ///      already frozen or blacklisted), then builds the call(s) the
+    ///      Admin-or-Owner reach describes: `freeze` submits the clean group
+    ///      only - a held request needs nothing more from a freeze, so it is
+    ///      left out rather than sent for a no-op - and refuses outright when
+    ///      every id is held; `blacklist` submits both groups, the held one
+    ///      without its receiver, since escalating an already-frozen party is
+    ///      exactly what blacklist is for.
+    function _blockByRequest(bool freezing, uint256[] memory ids, string memory reason) internal view {
+        bytes32 reasonHash = _reasonHash(reason);
+        (uint256[] memory cleanIds, uint256[] memory heldIds) = _splitByHeldState(ids);
+
+        console2.log("clean requests       :", cleanIds.length, "(neither party already blocked)");
+        console2.log("held requests        :", heldIds.length, "(originator or owner already blocked)");
+        console2.log("reason hash          :", vm.toString(reasonHash));
+        console2.log("");
+
+        if (freezing) {
+            if (heldIds.length > 0) {
+                console2.log(string.concat(vm.toString(heldIds.length), " request(s) skipped: already held"));
+            }
+            require(
+                cleanIds.length > 0,
+                string.concat(vm.toString(heldIds.length), " request(s) skipped: already held")
+            );
+            _previewByRequestGroup(cleanIds, true, IExitDelayQueue.BlockState.Frozen);
+            bytes memory data = abi.encodeWithSignature(
+                "freezeFromRequest(uint256[],bool,bytes32)", cleanIds, true, reasonHash
+            );
+            _emitCalldata(address(queue), data, "freeze");
+            return;
+        }
+
+        // Blacklist escalates a held party exactly as it does a clean one, so
+        // both groups go out - the held group just never reaches its receiver.
+        if (cleanIds.length > 0) {
+            _previewByRequestGroup(cleanIds, true, IExitDelayQueue.BlockState.Blacklisted);
+            bytes memory cleanData = abi.encodeWithSignature(
+                "blacklistFromRequest(uint256[],bool,bytes32)", cleanIds, true, reasonHash
+            );
+            _emitCalldata(address(queue), cleanData, "blacklist");
+        }
+        if (heldIds.length > 0) {
+            _previewByRequestGroup(heldIds, false, IExitDelayQueue.BlockState.Blacklisted);
+            bytes memory heldData = abi.encodeWithSignature(
+                "blacklistFromRequest(uint256[],bool,bytes32)", heldIds, false, reasonHash
+            );
+            _emitCalldata(address(queue), heldData, "blacklist");
+        }
+    }
+
+    /// @dev Prints the parties a by-request group resolves to and the state
+    ///      change each one is headed for.
+    function _previewByRequestGroup(
+        uint256[] memory ids,
+        bool includeReceiver,
+        IExitDelayQueue.BlockState target
+    ) internal view {
+        console2.log(
+            includeReceiver ? "  clean group (receiver included):" : "  held group (receiver left alone):"
+        );
+        address[] memory actors = _partiesBehind(ids, includeReceiver);
+        for (uint256 i = 0; i < actors.length; ++i) {
+            IExitDelayQueue.BlockState from = queue.blockStateOf(actors[i]);
+            console2.log(
+                string.concat(
+                    "    ", vm.toString(actors[i]), "  ", _stateName(from), " -> ", _stateName(target)
+                )
+            );
+        }
+        console2.log("");
     }
 
     // --- Blacklisted -> Frozen ------------------------------------------
@@ -454,9 +531,13 @@ contract BlockExits is Script {
         console2.log("perimeter enabled    :", current);
         console2.log("global delay length  :", uint256(length), "seconds (0 = unset)");
         if (enabled) {
-            if (!current) revert("NOT CONFIRMED: the delay switch reads off - the switch-on did not take effect");
+            if (!current) {
+                revert("NOT CONFIRMED: the delay switch reads off - the switch-on did not take effect");
+            }
             if (length == 0) {
-                revert("NOT CONFIRMED: the delay switch reads on but the length is unset (0) - no withdrawal is held");
+                revert(
+                    "NOT CONFIRMED: the delay switch reads on but the length is unset (0) - no withdrawal is held"
+                );
             }
             console2.log("CONFIRMED: the delay switch reads on with a length set.");
         } else {
@@ -467,25 +548,34 @@ contract BlockExits is Script {
         }
     }
 
-    /// @dev Run after a block, downgrade or clear executes. Prints the live state
-    ///      of every address named directly, plus the parties behind the request
-    ///      ids, and refuses unless every one of them reads `target` - the state
-    ///      the submitted call was supposed to produce - so a failed inner call
-    ///      is not read as confirmation from a multisig transaction that itself
-    ///      reported success. `acceptStronger` widens the check to "at least as
-    ///      strong as `target`": a by-request freeze over an already-blacklisted
-    ///      party correctly holds the stronger state instead of moving to Frozen,
-    ///      and that must read as confirmed, not as a freeze that failed. A
-    ///      downgrade or a clear never sets it - there, a party still reading a
-    ///      stronger state than the target is the genuine unconfirmed case.
+    /// @dev Run after a block, downgrade or clear executes. By address
+    ///      (`ids.length == 0`, or a downgrade/clear verify), this reads the
+    ///      live state of every named address and refuses unless every one of
+    ///      them reads `target` - the state the submitted call was supposed to
+    ///      produce - so a failed inner call is not read as confirmation from a
+    ///      multisig transaction that itself reported success. `acceptStronger`
+    ///      widens the check to "at least as strong as `target`": a freeze over
+    ///      an already-blacklisted party correctly holds the stronger state
+    ///      instead of moving to Frozen, and that must read as confirmed, not as
+    ///      a freeze that failed. A downgrade or a clear never sets it - there, a
+    ///      party still reading a stronger state than the target is the genuine
+    ///      unconfirmed case.
+    ///
+    ///      By request, with `acceptStronger` set (`verify-freeze` /
+    ///      `verify-blacklist`), the check instead goes through `_verifyByRequest`,
+    ///      which reads the clean and held groups apart.
     function _verify(
         address[] memory actorsIn,
         uint256[] memory ids,
-        bool freezeReceiver,
         IExitDelayQueue.BlockState target,
         bool acceptStronger
     ) internal view {
-        address[] memory actors = ids.length > 0 ? _partiesBehind(ids, freezeReceiver) : actorsIn;
+        if (ids.length > 0 && acceptStronger) {
+            _verifyByRequest(ids, target);
+            return;
+        }
+
+        address[] memory actors = ids.length > 0 ? _partiesBehind(ids, false) : actorsIn;
         require(actors.length > 0, "set BLOCK_ACTORS or BLOCK_REQUEST_IDS");
 
         bool mismatchFound;
@@ -536,7 +626,139 @@ contract BlockExits is Script {
         );
     }
 
+    /// @dev Verifies a by-request freeze or blacklist, reading the clean and
+    ///      held groups apart rather than re-deriving them from the current
+    ///      originator/owner state - after a blacklist both groups read the
+    ///      same target state on those two parties, so that state alone cannot
+    ///      say which group a request was in. `blockTrigger(receiver) == id` can:
+    ///      it reads true only when processing this exact id is what last set
+    ///      the receiver's trigger, which happens only when the receiver was
+    ///      named in that id's own call - i.e. only for the clean group, under
+    ///      either action. For a request that reads clean this way, originator,
+    ///      owner and receiver must all reach `target` or stronger. For one that
+    ///      reads held, the receiver must still read below `target` (the call
+    ///      left it alone); its originator and owner are checked at the
+    ///      strength each action actually gives a held request - freeze never
+    ///      touches it, so only the party that was already blocked is
+    ///      guaranteed to still read blocked, not both; blacklist escalates it
+    ///      exactly as it does a clean request, so both must reach `target`.
+    function _verifyByRequest(uint256[] memory ids, IExitDelayQueue.BlockState target) internal view {
+        bool mismatchFound;
+        address mismatchAddr;
+        string memory mismatchNote;
+
+        for (uint256 i = 0; i < ids.length; ++i) {
+            IExitDelayQueue.ExitRequest memory r = queue.getRequest(ids[i]);
+            require(
+                r.status != IExitDelayQueue.ExitStatus.None,
+                string.concat("unknown request id ", vm.toString(ids[i]), " - the batch is atomic")
+            );
+
+            IExitDelayQueue.BlockState oState = queue.blockStateOf(r.originator);
+            IExitDelayQueue.BlockState wState = queue.blockStateOf(r.owner);
+            IExitDelayQueue.BlockState rState = queue.blockStateOf(r.receiver);
+            bool receiverIncluded = queue.blockTrigger(r.receiver) == ids[i];
+
+            console2.log(
+                string.concat(
+                    "  request #",
+                    vm.toString(ids[i]),
+                    "  originator ",
+                    _stateName(oState),
+                    "  owner ",
+                    _stateName(wState),
+                    "  receiver ",
+                    _stateName(rState),
+                    receiverIncluded ? "  (clean group)" : "  (held group - receiver left alone)"
+                )
+            );
+
+            bool partiesOk;
+            if (receiverIncluded || target == IExitDelayQueue.BlockState.Blacklisted) {
+                // Clean group under either action, or held group under
+                // blacklist: both parties are always processed, so both must
+                // reach target.
+                partiesOk = uint8(oState) >= uint8(target) && uint8(wState) >= uint8(target);
+            } else {
+                // Held group under freeze: the request was skipped outright, so
+                // only the party that was already blocked is guaranteed to
+                // still read blocked - not both.
+                partiesOk = uint8(oState) >= uint8(target) || uint8(wState) >= uint8(target);
+            }
+            if (!mismatchFound && !partiesOk) {
+                mismatchFound = true;
+                mismatchAddr = r.originator;
+                mismatchNote = "originator/owner did not reach the expected block state";
+            }
+
+            bool receiverOk =
+                receiverIncluded ? uint8(rState) >= uint8(target) : uint8(rState) < uint8(target);
+            if (!mismatchFound && !receiverOk) {
+                mismatchFound = true;
+                mismatchAddr = r.receiver;
+                mismatchNote = receiverIncluded
+                    ? "receiver did not reach the expected block state"
+                    :
+                    "receiver was blocked but belongs to an already-held request - it should have been left alone";
+            }
+        }
+
+        if (mismatchFound) {
+            revert(
+                string.concat(
+                    "NOT CONFIRMED: ",
+                    vm.toString(mismatchAddr),
+                    " - ",
+                    mismatchNote,
+                    " - the call did not take effect"
+                )
+            );
+        }
+        console2.log(
+            "CONFIRMED: every clean request's receiver is blocked and every held request's receiver is untouched."
+        );
+    }
+
     // --- Helpers --------------------------------------------------------
+
+    /// @dev Splits by-request ids into a CLEAN group (originator and owner both
+    ///      unblocked) and a HELD group (at least one of them already frozen or
+    ///      blacklisted), read live - the same rule and the same live state
+    ///      `_partiesBehind` resolves against, so the split reflects exactly
+    ///      what the multisig will see. Rejects unknown ids up front, same as
+    ///      `_partiesBehind`.
+    function _splitByHeldState(uint256[] memory ids)
+        internal
+        view
+        returns (uint256[] memory clean, uint256[] memory held)
+    {
+        uint256[] memory cleanBuf = new uint256[](ids.length);
+        uint256[] memory heldBuf = new uint256[](ids.length);
+        uint256 nc;
+        uint256 nh;
+        for (uint256 i = 0; i < ids.length; ++i) {
+            IExitDelayQueue.ExitRequest memory r = queue.getRequest(ids[i]);
+            require(
+                r.status != IExitDelayQueue.ExitStatus.None,
+                string.concat("unknown request id ", vm.toString(ids[i]), " - the batch is atomic")
+            );
+            bool isClean = queue.blockStateOf(r.originator) == IExitDelayQueue.BlockState.None
+                && queue.blockStateOf(r.owner) == IExitDelayQueue.BlockState.None;
+            if (isClean) {
+                cleanBuf[nc++] = ids[i];
+            } else {
+                heldBuf[nh++] = ids[i];
+            }
+        }
+        clean = new uint256[](nc);
+        for (uint256 i = 0; i < nc; ++i) {
+            clean[i] = cleanBuf[i];
+        }
+        held = new uint256[](nh);
+        for (uint256 i = 0; i < nh; ++i) {
+            held[i] = heldBuf[i];
+        }
+    }
 
     /// @dev Resolve every party the on-chain batch would block, with the same
     ///      rules the contract uses: originator always, owner when distinct,
@@ -611,9 +833,7 @@ contract BlockExits is Script {
         console2.log("data :", vm.toString(data));
         console2.log("");
         console2.log("Submit via the multisig's Read/Write contract tab on Blockscout:");
-        console2.log(
-            "  https://rootstock.blockscout.com/address/<ADMIN_MULTISIG>?tab=read_write_contract"
-        );
+        console2.log("  https://rootstock.blockscout.com/address/<ADMIN_MULTISIG>?tab=read_write_contract");
         console2.log("  method 20. submitTransaction: destination = `to` above, value = 0,");
         console2.log("  data = the hex above. Simulate first, then Write. Further owners");
         console2.log("  confirm the emitted transactionId via method 4. confirmTransaction;");
@@ -625,7 +845,9 @@ contract BlockExits is Script {
         );
         console2.log(
             string.concat(
-                "BLOCK_ACTION=", _verifyActionFor(action), " forge script script/07_BlockExits.s.sol --rpc-url $RPC"
+                "BLOCK_ACTION=",
+                _verifyActionFor(action),
+                " forge script script/07_BlockExits.s.sol --rpc-url $RPC"
             )
         );
     }
