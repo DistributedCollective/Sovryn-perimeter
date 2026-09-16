@@ -356,9 +356,7 @@ contract InspectController is Script {
     ///      carrying ONLY a sub-product- or actor-tier bypass is present here even
     ///      though it was never passed to `setSurfaceBypass`. The named fee surfaces
     ///      are folded in so the human-readable rows always render, and duplicates
-    ///      are collapsed. Root cause of the old gap (`surfaceBypassKeys()`-only
-    ///      driver): the master id-set was populated solely by `setSurfaceBypass`,
-    ///      so an actor-only bypass under an arbitrary surfaceId was undiscoverable.
+    ///      are collapsed.
     function _probeSurfaceIds(ExitFeeController c) internal view returns (bytes32[] memory) {
         bytes32[] memory bypassIds = c.bypassSurfaceIds();
 
