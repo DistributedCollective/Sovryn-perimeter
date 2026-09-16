@@ -7,8 +7,10 @@ pragma solidity 0.8.20;
 ///         configurable delay so a detected theft can be blocked (frozen or
 ///         blacklisted) and routed to recovery before the funds leave.
 ///
-///         This interface mirrors `ExitDelayQueue`'s complete function
-///         catalog and its event and error catalog; the types mirror the
+///         This interface mirrors `ExitDelayQueue`'s complete external function
+///         catalog and its event and error catalog, other than the
+///         `SelfOnly`-guarded `payoutExternal` self-call trampoline, which is
+///         not part of the ABI a caller is meant to use; the types mirror the
 ///         queue's own struct and enum declarations.
 ///
 ///         Types (enums/structs) are declared here so cross-pragma callers
@@ -108,6 +110,7 @@ interface IExitDelayQueue {
     event SecurityPerimeterPausedSet(bool paused);
     event NativePusherSet(address indexed pusher);
     event SurplusSwept(address indexed token, address indexed to, uint256 amount);
+    event AdminSet(address indexed admin);
 
     // ─── Custom errors ───────────────────────────────────────────
 
@@ -140,6 +143,10 @@ interface IExitDelayQueue {
     error EmptyIds();
     error SweepToZero();
     error SolvencyViolated(); //                  post-transfer balance < totalEscrowed
+    error NotAdminOrOwner(address caller); //     onlyAdminOrOwner
+    error OwnershipCannotBeRenounced(); //        renounceOwnership disabled
+    error UpgradeImplZero(); //                   UUPS _authorizeUpgrade guard
+    error InvalidDestination(address destination); // resolveByOwner / setRecoveryRoute destination guard
 
     // ─── Ingress ──────────────────────────────────────────
 
@@ -324,10 +331,16 @@ interface IExitDelayQueue {
     function addAllowedSource(address src) external;
     function removeAllowedSource(address src) external;
     function setNativePusher(address pusher) external;
+    function setAdmin(address newAdmin) external;
     function setMinimumDelaySeconds(uint32 s) external;
     function sweepSurplus(address token, address to) external;
 
     // ─── Views ───────────────────────────────────────────────────
+
+    // `payoutExternal` is deliberately not declared here: it is the
+    // `SelfOnly`-guarded self-call trampoline `executeExit`/`recoverStuckExit`
+    // use to reach the same payout path, not a member of the external ABI a
+    // caller or client is meant to use.
 
     function getRequest(uint256 id) external view returns (ExitRequest memory);
     function getActive(address party, uint256 cursor, uint256 n)
@@ -335,6 +348,35 @@ interface IExitDelayQueue {
         view
         returns (uint256[] memory ids, uint256 nextCursor);
     function blockStateOf(address a) external view returns (BlockState);
+
+    /// @notice The fast operational guardian checked by `onlyAdminOrOwner`.
+    function admin() external view returns (address);
+
+    /// @notice Monotonic id source; the first recorded id is 1.
+    function lastRequestId() external view returns (uint256);
+
+    /// @notice The registered native pusher recorded as ingress provenance.
+    function nativePusher() external view returns (address);
+
+    /// @notice The per-request delay floor enforced at ingress.
+    function minimumDelaySeconds() external view returns (uint32);
+
+    /// @notice Whether the queue currently pays nobody through the
+    ///         user-facing legs.
+    function securityPerimeterPaused() external view returns (bool);
+
+    /// @notice The canonical WRBTC address used to guard and unwrap
+    ///         `unwrapOnDelivery` requests.
+    function wrbtc() external view returns (address);
+
+    /// @notice Enumerate registered recovery route ids.
+    function recoveryRouteIds() external view returns (bytes32[] memory);
+
+    /// @notice Whether a topUpPool route may be registered for `surfaceId`.
+    function topUpFeasible(bytes32 surfaceId) external view returns (bool);
+
+    /// @notice Whether `src` is a registered ingress source.
+    function isAllowedSource(address src) external view returns (bool);
 
     /// @notice Paginate the blocked set (Frozen ∪ Blacklisted).
     /// @param offset First index into the blocked set to return.

@@ -383,7 +383,7 @@ contract ExitDelayQueueMutantsTest is Test {
         uint256 id = _queueErc20(ORIG, OWNR, RCVR);
         address outsider = address(0xBAD1);
         vm.prank(outsider);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, outsider));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, outsider));
         queue.freezeFromRequest(id, false, bytes32(0));
     }
 
@@ -395,7 +395,7 @@ contract ExitDelayQueueMutantsTest is Test {
         uint256 id = _queueErc20(ORIG, OWNR, RCVR);
         address outsider = address(0xBAD2);
         vm.prank(outsider);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, outsider));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, outsider));
         queue.blacklistFromRequest(id, false, bytes32(0));
     }
 

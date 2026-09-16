@@ -433,7 +433,7 @@ contract ExitDelayQueueTest is Test {
 
     function test_renounceOwnership_disabled() public {
         vm.prank(OWNER);
-        vm.expectRevert(ExitDelayQueue.OwnershipCannotBeRenounced.selector);
+        vm.expectRevert(IExitDelayQueue.OwnershipCannotBeRenounced.selector);
         queue.renounceOwnership();
     }
 
@@ -830,7 +830,7 @@ contract ExitDelayQueueTest is Test {
 
     function test_freeze_only_admin_or_owner() public {
         vm.prank(OUTSIDER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
         queue.freeze(ORIG);
     }
 
@@ -966,7 +966,7 @@ contract ExitDelayQueueTest is Test {
         vm.prank(ADMIN);
         queue.blacklist(ORIG);
         vm.prank(OUTSIDER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
         queue.downgradeToFrozen(ORIG);
     }
 
@@ -1379,7 +1379,7 @@ contract ExitDelayQueueTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OUTSIDER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
         queue.resolveToProtocol(ids, routeId);
     }
 
@@ -1583,11 +1583,11 @@ contract ExitDelayQueueTest is Test {
         ids[0] = id;
 
         vm.startPrank(OWNER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(queue)));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidDestination.selector, address(queue)));
         queue.resolveByOwner(ids, address(queue));
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(wrbtc)));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidDestination.selector, address(wrbtc)));
         queue.resolveByOwner(ids, address(wrbtc));
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(token)));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidDestination.selector, address(token)));
         queue.resolveByOwner(ids, address(token));
         vm.stopPrank();
     }
@@ -2206,7 +2206,7 @@ contract ExitDelayQueueTest is Test {
 
     function test_setSecurityPerimeterPaused_authority() public {
         vm.prank(OUTSIDER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
         queue.setSecurityPerimeterPaused(true);
     }
 
@@ -2327,7 +2327,7 @@ contract ExitDelayQueueTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OUTSIDER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
         queue.freezeFromRequest(ids, false, bytes32(0));
     }
 
@@ -2561,7 +2561,7 @@ contract ExitDelayQueueTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OUTSIDER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotAdminOrOwner.selector, OUTSIDER));
         queue.blacklistFromRequest(ids, false, bytes32(0));
     }
 
@@ -2664,7 +2664,7 @@ contract ExitDelayQueueTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(OWNER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidDestination.selector, address(0)));
         queue.resolveByOwner(ids, address(0));
     }
 
@@ -2761,7 +2761,7 @@ contract ExitDelayQueueTest is Test {
 
     function test_upgrade_zero_impl_reverts() public {
         vm.prank(OWNER);
-        vm.expectRevert(ExitDelayQueue.UpgradeImplZero.selector);
+        vm.expectRevert(IExitDelayQueue.UpgradeImplZero.selector);
         queue.upgradeTo(address(0));
     }
 
@@ -2796,7 +2796,7 @@ contract ExitDelayQueueTest is Test {
             topUpPool: false
         });
         vm.prank(OWNER);
-        vm.expectRevert(abi.encodeWithSelector(ExitDelayQueue.InvalidDestination.selector, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.InvalidDestination.selector, address(0)));
         queue.setRecoveryRoute(route);
     }
 

@@ -193,10 +193,6 @@ contract ExitDelayQueue is
         _;
     }
 
-    error NotAdminOrOwner(address caller);
-    error OwnershipCannotBeRenounced();
-    error UpgradeImplZero();
-    error InvalidDestination(address destination);
 
     // ─── Construction / initialization ──────────────────────────────────
 
@@ -999,14 +995,13 @@ contract ExitDelayQueue is
         emit NativePusherSet(pusher);
     }
 
+    /// @inheritdoc IExitDelayQueue
     /// @notice Rotate the Admin guardian. Non-zero; MAY equal the Owner.
     function setAdmin(address newAdmin) external onlyOwner {
         if (newAdmin == address(0)) revert ZeroAddress();
         admin = newAdmin;
         emit AdminSet(newAdmin);
     }
-
-    event AdminSet(address indexed admin);
 
     /// @inheritdoc IExitDelayQueue
     function setMinimumDelaySeconds(uint32 s) external onlyOwner {
