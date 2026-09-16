@@ -7,10 +7,18 @@ pragma solidity 0.8.20;
 ///         configurable delay so a detected theft can be blocked (frozen or
 ///         blacklisted) and routed to recovery before the funds leave.
 ///
-///         This interface mirrors `ExitDelayQueue`'s complete external function
-///         catalog and its event and error catalog, other than the
-///         `SelfOnly`-guarded `payoutExternal` self-call trampoline, which is
-///         not part of the ABI a caller is meant to use; the types mirror the
+///         This interface mirrors `ExitDelayQueue`'s complete queue-specific
+///         operational function catalog and its event and error catalog,
+///         other than the `SelfOnly`-guarded `payoutExternal` self-call
+///         trampoline, which is not part of the ABI a caller is meant to use.
+///         Two other classes of ABI member are deliberately left out as a
+///         named carve-out, not an oversight: one-time proxy setup
+///         (`initialize`) and the inherited ownership/upgrade administration
+///         (`owner`, `pendingOwner`, `transferOwnership`, `acceptOwnership`,
+///         `renounceOwnership`, `upgradeToAndCall`, `upgradeTo`,
+///         `proxiableUUID`, from `OwnableUpgradeable`, `Ownable2StepUpgradeable`
+///         and `UUPSUpgradeable`), which a caller consumes through those
+///         base contracts' own interfaces, not this one. The types mirror the
 ///         queue's own struct and enum declarations.
 ///
 ///         Types (enums/structs) are declared here so cross-pragma callers
