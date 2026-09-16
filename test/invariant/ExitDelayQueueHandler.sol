@@ -385,8 +385,9 @@ contract ExitDelayQueueHandler is Test {
 
     // ── stuck-exit recovery — verify-by-attempting redirect leg ──
 
-    /// @dev recoverStuckExit(id, altReceiver): callable by the request's originator
-    ///      or owner only, whether or not the owner has code. Attempts the STORED
+    /// @dev recoverStuckExit(id, altReceiver): callable by the request's originator,
+    ///      its owner, or its recorded receiver, whether or not the owner has code —
+    ///      never widened to anyone else the way delivery is. Attempts the STORED
     ///      receiver first and pays altReceiver only
     ///      on a genuine bounce (verify-by-attempting) — but ON SUCCESS (either
     ///      branch) it is a TERMINAL transition, so ghost accounting must decrement,

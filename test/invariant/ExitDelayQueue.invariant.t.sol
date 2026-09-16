@@ -244,6 +244,17 @@ contract ExitDelayQueueInvariant is Test {
         assertEq(handler.recoveredPayouts(), 1, "stuck-exit recovery never paid out");
         assertGt(handler.paidTotal(), paidBefore, "recovery payout never reached the ledger");
 
+        // Recovery is also reachable through the request's receiver alone, not
+        // only through the originator/owner pair every fixture above shares
+        // (they all record with aSeed=bSeed=0, so orig==ownr for every one of
+        // them). A purpose-built request with three distinct parties proves the
+        // receiver path is exercised, not just allowed on paper.
+        handler.recordErc20(uint128(1e18), 0, 0, 2); // orig=actors[0], owner=actors[2], receiver=actors[1]
+        uint256 paidBeforeByReceiver = handler.paidTotal();
+        handler.recoverStuck(5, 4); // liveIds[5]; caller = actors[4 % 3] = actors[1], the receiver
+        assertEq(handler.recoveredPayouts(), 2, "receiver-only stuck-exit recovery never paid out");
+        assertGt(handler.paidTotal(), paidBeforeByReceiver, "receiver recovery payout never reached the ledger");
+
         // A release attempted while the perimeter is paused.
         handler.pause(true);
         handler.execute(2, 0);

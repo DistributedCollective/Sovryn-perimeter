@@ -367,9 +367,11 @@ contract EchidnaExitDelayQueue {
     }
 
     /// @dev Gate-5 redirect leg (mirrors ExitDelayQueueHandler.recoverStuck).
-    ///      recoverStuckExit(id, altReceiver) shares execute's {originator, owner}
-    ///      authorization and on SUCCESS (stored-receiver or altReceiver branch) is
-    ///      a TERMINAL transition, so ghost accounting decrements exactly like
+    ///      recoverStuckExit(id, altReceiver) is callable by the request's
+    ///      originator, its owner, or its recorded receiver — never widened to
+    ///      anyone else the way delivery is — and on SUCCESS (stored-receiver or
+    ///      altReceiver branch) is a TERMINAL transition, so ghost accounting
+    ///      decrements exactly like
     ///      execute. altReceiver is one of the plain EOA actors — never 0/this/
     ///      token/wrbtc — so the guard doesn't mask the leg (actors[0] is this
     ///      harness, hence the 1 + altSeed % 2 pick). Lock/block/pause/terminal
