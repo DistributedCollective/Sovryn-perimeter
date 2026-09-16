@@ -54,6 +54,20 @@ line_length = 110
 # would diverge from the spec without functional benefit.
 exclude_lints = ["mixed-case-function"]
 
+# Every contract under src/, script/ and test/ pins `pragma solidity 0.8.20` exactly, so
+# auto_detect_solc already resolves one version for all of them regardless of what else is
+# installed. The vendored proxy below carries a floating `pragma solidity ^0.8.0`, so
+# auto-detection is free to resolve whichever 0.8.x is newest on the machine running
+# `forge build`, which can compile the same source into different deployed bytecode on
+# different machines. That proxy is what the deploy scripts put on chain, so its compile
+# group is restricted to the same 0.8.20 every other contract here already resolves to --
+# an exact version, not a range, so a newer 0.8.x cannot satisfy it. Scoped to this one
+# path rather than a global solc pin: the 0.4.26 legacy interface under src/interfaces/v0_4
+# needs its own compiler and would fail to build under a repo-wide 0.8.20 pin.
+[[profile.default.compilation_restrictions]]
+paths = "lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol"
+version = "=0.8.20"
+
 [rpc_endpoints]
 rsk_mainnet = "${RSK_MAINNET_RPC}"
 rsk_testnet = "${RSK_TESTNET_RPC}"
