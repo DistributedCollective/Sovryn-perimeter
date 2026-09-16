@@ -735,6 +735,26 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
         emit ActorBypassSet(surfaceId, actor, true, false);
     }
 
+    /// @notice Grant an actor-tier exemption on `surfaceId` in one call: the
+    ///         fee entry is written {active: true, rateBps: 0} and the delay
+    ///         entry {active: true, bypass: true} together, so there is no
+    ///         confirmation round in which only one half is live. Mirrors
+    ///         `revokeExemption`'s two-write atomicity in the grant direction.
+    // aderyn-ignore-next-line(centralization-risk)
+    function grantExemption(bytes32 surfaceId, address actor) external onlyOwner {
+        if (actor == address(0)) revert ActorZero();
+        _actorPolicy[surfaceId][actor] = RatePolicy({active: true, rateBps: 0});
+        // aderyn-ignore-next-line(unchecked-return)
+        _actorKeys[surfaceId].add(actor);
+        emit ActorPolicySet(surfaceId, actor, true, 0);
+        _actorBypass[surfaceId][actor] = IExitFeeController.DelayBypassPolicy({active: true, bypass: true});
+        // aderyn-ignore-next-line(unchecked-return)
+        _actorBypassKeys[surfaceId].add(actor);
+        // aderyn-ignore-next-line(unchecked-return)
+        _bypassSurfaceIds.add(surfaceId);
+        emit ActorBypassSet(surfaceId, actor, true, true);
+    }
+
     function _removeSubProductBypass(bytes32 surfaceId, address subProduct) internal {
         if (subProduct == address(0)) revert SubProductZero();
         if (_subProductBypassKeys[surfaceId].remove(subProduct)) {

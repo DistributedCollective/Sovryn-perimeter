@@ -1165,6 +1165,45 @@ contract ExitFeeControllerTest is Test {
         controller.revokeExemption(SURFACE, address(0));
     }
 
+    // ─── grantExemption: both halves granted in one call ──
+
+    /// @notice Regression for the two-call grant window: `setActorPolicy` then
+    ///         `setActorBypass` as two separate multisig transactions leaves a
+    ///         real gap between them where the actor is fee-exempt but still
+    ///         held, or (if the delay half lands first) paid instantly with no
+    ///         hold at all despite still being charged. `grantExemption` writes
+    ///         both in the same call, so no observable state has only one half
+    ///         applied.
+    function test_grantExemption_grants_fee_and_delay_halves_atomically() public {
+        _enableDelay(DELAY);
+        vm.startPrank(ADMIN);
+        controller.setFeeReceiver(VAULT);
+        controller.setExitFeeEnabled(true);
+        controller.setSurfacePolicy(SURFACE, IExitFeeController.RatePolicy({active: true, rateBps: 25}));
+        vm.stopPrank();
+        assertEq(controller.quoteExitFee(SURFACE, IXUSD, ACTOR, 1e18).feeAmount, 25e14, "charged before");
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), DELAY, "held before");
+
+        vm.prank(ADMIN);
+        controller.grantExemption(SURFACE, ACTOR);
+
+        assertEq(controller.quoteExitFee(SURFACE, IXUSD, ACTOR, 1e18).feeAmount, 0, "fee-exempt after one call");
+        assertEq(controller.quoteExitDelay(SURFACE, IXUSD, ACTOR), 0, "delay-exempt after the same call");
+        IExitFeeController.DelayBypassPolicy memory b = controller.actorBypass(SURFACE, ACTOR);
+        assertTrue(b.active && b.bypass, "delay entry written active with bypass");
+        IExitFeeController.RatePolicy memory f = controller.actorPolicy(SURFACE, ACTOR);
+        assertTrue(f.active && f.rateBps == 0, "fee entry written active at rate 0");
+    }
+
+    function test_grantExemption_only_owner_and_nonzero_actor() public {
+        vm.prank(GUARDIAN);
+        vm.expectRevert("Ownable: caller is not the owner");
+        controller.grantExemption(SURFACE, ACTOR);
+        vm.prank(ADMIN);
+        vm.expectRevert(ExitFeeController.ActorZero.selector);
+        controller.grantExemption(SURFACE, address(0));
+    }
+
     function test_active_false_bypass_forces_delay_over_broader_bypass() public {
         // The tricky override: a more-specific active {bypass:false} re-imposes
         // delay even when a broader tier bypasses.
