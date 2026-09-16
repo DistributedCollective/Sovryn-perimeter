@@ -44,6 +44,13 @@ contract EchidnaExitDelayQueue {
 
     uint256[] internal liveIds;
 
+    /// @dev Snapshot of a request exactly as record* left it: read straight
+    ///      back off the queue in the same call that created it, before any
+    ///      other action can run. Every field but `status` must read the same
+    ///      value forever after — echidna_request_metadata_immutable checks
+    ///      the live request against this snapshot for every id ever recorded.
+    mapping(uint256 => IExitDelayQueue.ExitRequest) internal _recordedAt;
+
     // Provenance stamped on every recorded request; the Leg-2 routes are
     // registered from these exact values so recovery-away is reachable.
     bytes32 internal constant ERC20_SURFACE = keccak256("S");
@@ -123,6 +130,7 @@ contract EchidnaExitDelayQueue {
             false
         ) returns (uint256 id) {
             liveIds.push(id);
+            _recordedAt[id] = queue.getRequest(id);
             ghostQueuedErc20 += amount;
             totalRecorded++;
         } catch {}
@@ -142,6 +150,7 @@ contract EchidnaExitDelayQueue {
             actors[(bSeed % 3 + 1) % 3]
         ) returns (uint256 id) {
             liveIds.push(id);
+            _recordedAt[id] = queue.getRequest(id);
             ghostQueuedNative += amount;
             totalRecorded++;
         } catch {}
@@ -474,6 +483,30 @@ contract EchidnaExitDelayQueue {
 
     function echidna_no_double_terminal() external view returns (bool) {
         return totalTerminal <= totalRecorded;
+    }
+
+    /// @dev A recorded request's originator, owner, receiver, token, amount,
+    ///      surfaceId, subProduct, unwrapOnDelivery, createdAt and unlockAt
+    ///      never change after the request is created — only `status` may
+    ///      move. Checked against the snapshot taken in the same call that
+    ///      recorded it, for every id the campaign has ever recorded.
+    function echidna_request_metadata_immutable() external view returns (bool) {
+        for (uint256 i = 0; i < liveIds.length; ++i) {
+            uint256 id = liveIds[i];
+            IExitDelayQueue.ExitRequest memory live = queue.getRequest(id);
+            IExitDelayQueue.ExitRequest memory recorded = _recordedAt[id];
+            if (live.originator != recorded.originator) return false;
+            if (live.owner != recorded.owner) return false;
+            if (live.receiver != recorded.receiver) return false;
+            if (live.token != recorded.token) return false;
+            if (live.amount != recorded.amount) return false;
+            if (live.surfaceId != recorded.surfaceId) return false;
+            if (live.subProduct != recorded.subProduct) return false;
+            if (live.unwrapOnDelivery != recorded.unwrapOnDelivery) return false;
+            if (live.createdAt != recorded.createdAt) return false;
+            if (live.unlockAt != recorded.unlockAt) return false;
+        }
+        return true;
     }
 
     /// @dev No release ever paid out while any of originator/owner/receiver was
