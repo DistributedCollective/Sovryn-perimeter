@@ -320,7 +320,7 @@ contract BlockExitsTest is Test {
     function test_unknown_action_is_rejected() public {
         vm.expectRevert(
             bytes(
-                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, verify, pause, unpause, verify-pause, verify-unpause, disable-perimeter, enable-perimeter, verify-disable-perimeter, verify-enable-perimeter"
+                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, verify-freeze, verify-blacklist, verify-downgrade, verify-unfreeze, verify-unblacklist, pause, unpause, verify-pause, verify-unpause, disable-perimeter, enable-perimeter, verify-disable-perimeter, verify-enable-perimeter"
             )
         );
         script.dispatch("halt", _addrs(ORIG), _noIds(), false, "");
@@ -350,17 +350,107 @@ contract BlockExitsTest is Test {
         script.dispatch("unpause", _noAddrs(), _noIds(), false, "");
     }
 
-    function test_verify_reads_live_state() public {
+    /// @notice The multisig reports success even when the call inside it failed,
+    ///         so after a freeze the operator reads the block state back. The
+    ///         check refuses while any resolved party still reads a state other
+    ///         than Frozen, and confirms once every one of them does.
+    function test_verify_freeze_confirms_only_a_frozen_party() public {
         uint256 id = _record(ORIG, OWNR, RCVR);
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "NOT CONFIRMED: ", vm.toString(ORIG), " reads None, not Frozen - the call did not take effect"
+                )
+            )
+        );
+        script.dispatch("verify-freeze", _noAddrs(), _ids(id), true, "");
+
         vm.prank(ADMIN);
         queue.freezeFromRequest(_ids(id), true, keccak256("drill"));
-        script.dispatch("verify", _noAddrs(), _ids(id), true, "");
-        script.dispatch("verify", _addrs(ORIG), _noIds(), false, "");
+        script.dispatch("verify-freeze", _noAddrs(), _ids(id), true, "");
+    }
+
+    /// @notice Same shape for blacklist: unconfirmed while the party still reads
+    ///         None, confirmed once it reads Blacklisted.
+    function test_verify_blacklist_confirms_only_a_blacklisted_party() public {
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "NOT CONFIRMED: ",
+                    vm.toString(ORIG),
+                    " reads None, not Blacklisted - the call did not take effect"
+                )
+            )
+        );
+        script.dispatch("verify-blacklist", _addrs(ORIG), _noIds(), false, "");
+
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        script.dispatch("verify-blacklist", _addrs(ORIG), _noIds(), false, "");
+    }
+
+    /// @notice A downgrade moves Blacklisted to Frozen, so the unconfirmed case
+    ///         here is the party still reading Blacklisted, not None.
+    function test_verify_downgrade_confirms_only_a_frozen_party() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "NOT CONFIRMED: ",
+                    vm.toString(ORIG),
+                    " reads Blacklisted, not Frozen - the call did not take effect"
+                )
+            )
+        );
+        script.dispatch("verify-downgrade", _addrs(ORIG), _noIds(), false, "");
+
+        vm.prank(ADMIN);
+        queue.downgradeToFrozen(ORIG);
+        script.dispatch("verify-downgrade", _addrs(ORIG), _noIds(), false, "");
+    }
+
+    /// @notice A clear moves the party back to None, so the unconfirmed case is
+    ///         the party still reading its blocked state.
+    function test_verify_unfreeze_confirms_only_a_cleared_party() public {
+        vm.prank(ADMIN);
+        queue.freeze(ORIG);
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "NOT CONFIRMED: ", vm.toString(ORIG), " reads Frozen, not None - the call did not take effect"
+                )
+            )
+        );
+        script.dispatch("verify-unfreeze", _addrs(ORIG), _noIds(), false, "");
+
+        vm.prank(ADMIN);
+        queue.unfreeze(ORIG);
+        script.dispatch("verify-unfreeze", _addrs(ORIG), _noIds(), false, "");
+    }
+
+    function test_verify_unblacklist_confirms_only_a_cleared_party() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "NOT CONFIRMED: ",
+                    vm.toString(ORIG),
+                    " reads Blacklisted, not None - the call did not take effect"
+                )
+            )
+        );
+        script.dispatch("verify-unblacklist", _addrs(ORIG), _noIds(), false, "");
+
+        vm.prank(ADMIN);
+        queue.unblacklist(ORIG);
+        script.dispatch("verify-unblacklist", _addrs(ORIG), _noIds(), false, "");
     }
 
     function test_verify_requires_input() public {
         vm.expectRevert(bytes("set BLOCK_ACTORS or BLOCK_REQUEST_IDS"));
-        script.dispatch("verify", _noAddrs(), _noIds(), false, "");
+        script.dispatch("verify-freeze", _noAddrs(), _noIds(), false, "");
     }
 
     // --- controller kill switch -----------------------------------------
@@ -455,11 +545,11 @@ contract BlockExitsTest is Test {
         assertEq(script.verifyActionFor("unpause"), "verify-unpause");
         assertEq(script.verifyActionFor("disable-perimeter"), "verify-disable-perimeter");
         assertEq(script.verifyActionFor("enable-perimeter"), "verify-enable-perimeter");
-        assertEq(script.verifyActionFor("freeze"), "verify");
-        assertEq(script.verifyActionFor("blacklist"), "verify");
-        assertEq(script.verifyActionFor("downgrade"), "verify");
-        assertEq(script.verifyActionFor("unfreeze"), "verify");
-        assertEq(script.verifyActionFor("unblacklist"), "verify");
+        assertEq(script.verifyActionFor("freeze"), "verify-freeze");
+        assertEq(script.verifyActionFor("blacklist"), "verify-blacklist");
+        assertEq(script.verifyActionFor("downgrade"), "verify-downgrade");
+        assertEq(script.verifyActionFor("unfreeze"), "verify-unfreeze");
+        assertEq(script.verifyActionFor("unblacklist"), "verify-unblacklist");
     }
 
     function test_disable_perimeter_previews_when_enabled() public {

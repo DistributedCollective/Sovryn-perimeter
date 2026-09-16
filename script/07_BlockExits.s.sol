@@ -62,7 +62,9 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///
 ///   export EXIT_DELAY_QUEUE=0x...            # the queue (required)
 ///   export EXIT_FEE_CONTROLLER=0x...         # controller; only the delay switch actions and their verify actions need it
-///   export BLOCK_ACTION=freeze               # freeze|blacklist|downgrade|unfreeze|unblacklist|verify
+///   export BLOCK_ACTION=freeze               # freeze|blacklist|downgrade|unfreeze|unblacklist
+///                                            # |verify-freeze|verify-blacklist|verify-downgrade
+///                                            # |verify-unfreeze|verify-unblacklist
 ///                                            # |pause|unpause|verify-pause|verify-unpause
 ///                                            # |disable-perimeter|enable-perimeter (controller kill switch)
 ///                                            # |verify-disable-perimeter|verify-enable-perimeter
@@ -79,11 +81,13 @@ import {IExitDelayQueue} from "../src/interfaces/IExitDelayQueue.sol";
 ///   Then submit the printed calldata from the Admin Safe and re-run with the
 ///   verify action the preview prints. The multisig reports success even when
 ///   the call inside it failed, so the state is read back rather than assumed:
-///   `verify` after a block, downgrade or clear reads the parties' block states
-///   (keep BLOCK_ACTORS or BLOCK_REQUEST_IDS set); `verify-pause` and
-///   `verify-unpause` read the pause state; `verify-disable-perimeter` and
-///   `verify-enable-perimeter` read the delay switch and its length. Each
-///   verify-* action refuses unless the state matches the call.
+///   `verify-freeze`, `verify-blacklist`, `verify-downgrade`, `verify-unfreeze`
+///   and `verify-unblacklist` each read the parties' block states and refuse
+///   unless every one of them matches (keep BLOCK_ACTORS or BLOCK_REQUEST_IDS
+///   set); `verify-pause` and `verify-unpause` read the pause state;
+///   `verify-disable-perimeter` and `verify-enable-perimeter` read the delay
+///   switch and its length. Each verify-* action refuses unless the state
+///   matches the call.
 contract BlockExits is Script {
     ExitDelayQueue internal queue;
     ExitFeeController internal controller;
@@ -144,8 +148,16 @@ contract BlockExits is Script {
             _clear(true, actors, ids);
         } else if (a == keccak256("unblacklist")) {
             _clear(false, actors, ids);
-        } else if (a == keccak256("verify")) {
-            _verify(actors, ids, freezeReceiver);
+        } else if (a == keccak256("verify-freeze")) {
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen);
+        } else if (a == keccak256("verify-blacklist")) {
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Blacklisted);
+        } else if (a == keccak256("verify-downgrade")) {
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen);
+        } else if (a == keccak256("verify-unfreeze")) {
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None);
+        } else if (a == keccak256("verify-unblacklist")) {
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None);
         } else if (a == keccak256("verify-pause")) {
             _verifyPause(true);
         } else if (a == keccak256("verify-unpause")) {
@@ -160,7 +172,7 @@ contract BlockExits is Script {
             _verifyDelaySwitch(true);
         } else {
             revert(
-                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, verify, pause, unpause, verify-pause, verify-unpause, disable-perimeter, enable-perimeter, verify-disable-perimeter, verify-enable-perimeter"
+                "BLOCK_ACTION must be one of: freeze, blacklist, downgrade, unfreeze, unblacklist, verify-freeze, verify-blacklist, verify-downgrade, verify-unfreeze, verify-unblacklist, pause, unpause, verify-pause, verify-unpause, disable-perimeter, enable-perimeter, verify-disable-perimeter, verify-enable-perimeter"
             );
         }
     }
@@ -457,24 +469,54 @@ contract BlockExits is Script {
 
     /// @dev Run after a block, downgrade or clear executes. Prints the live state
     ///      of every address named directly, plus the parties behind the request
-    ///      ids, so the operator confirms the outcome rather than assuming it
-    ///      from a successful transaction.
-    function _verify(address[] memory actorsIn, uint256[] memory ids, bool freezeReceiver) internal view {
+    ///      ids, and refuses unless every one of them reads `target` - the state
+    ///      the submitted call was supposed to produce - so a failed inner call
+    ///      is not read as confirmation from a multisig transaction that itself
+    ///      reported success.
+    function _verify(
+        address[] memory actorsIn,
+        uint256[] memory ids,
+        bool freezeReceiver,
+        IExitDelayQueue.BlockState target
+    ) internal view {
         address[] memory actors = ids.length > 0 ? _partiesBehind(ids, freezeReceiver) : actorsIn;
         require(actors.length > 0, "set BLOCK_ACTORS or BLOCK_REQUEST_IDS");
 
+        bool mismatchFound;
+        address mismatchAddr;
+        IExitDelayQueue.BlockState mismatchState;
         for (uint256 i = 0; i < actors.length; ++i) {
+            IExitDelayQueue.BlockState state = queue.blockStateOf(actors[i]);
             console2.log(
                 string.concat(
                     "  ",
                     vm.toString(actors[i]),
                     "  ",
-                    _stateName(queue.blockStateOf(actors[i])),
+                    _stateName(state),
                     "  trigger request #",
                     vm.toString(queue.blockTrigger(actors[i]))
                 )
             );
+            if (!mismatchFound && state != target) {
+                mismatchFound = true;
+                mismatchAddr = actors[i];
+                mismatchState = state;
+            }
         }
+        if (mismatchFound) {
+            revert(
+                string.concat(
+                    "NOT CONFIRMED: ",
+                    vm.toString(mismatchAddr),
+                    " reads ",
+                    _stateName(mismatchState),
+                    ", not ",
+                    _stateName(target),
+                    " - the call did not take effect"
+                )
+            );
+        }
+        console2.log(string.concat("CONFIRMED: every resolved address reads ", _stateName(target), "."));
     }
 
     // --- Helpers --------------------------------------------------------
@@ -571,19 +613,13 @@ contract BlockExits is Script {
         );
     }
 
-    /// @dev The verify action that reads back what `action` changed: the pause
+    /// @dev The verify action that reads back what `action` changed - the pause
     ///      state after pause or unpause, the switch and length after the delay
-    ///      switch, and the block states of the parties after a block, downgrade
-    ///      or clear.
+    ///      switch, or the block states of the parties after a block, downgrade
+    ///      or clear. Every action's verify action is its own name prefixed with
+    ///      "verify-", so each one refuses on the exact state it is named for.
     function _verifyActionFor(string memory action) internal pure returns (string memory) {
-        bytes32 a = keccak256(bytes(action));
-        if (
-            a == keccak256("pause") || a == keccak256("unpause") || a == keccak256("disable-perimeter")
-                || a == keccak256("enable-perimeter")
-        ) {
-            return string.concat("verify-", action);
-        }
-        return "verify";
+        return string.concat("verify-", action);
     }
 
     /// @dev The delay switch lives on the controller, so its actions and their
