@@ -56,6 +56,20 @@ contract ExitDelayQueueHandler is Test {
     ///      already-Queued exit; this ghost is what lets the invariant assert that.
     mapping(uint256 => uint32) public floorAtCreation;
 
+    /// @dev Snapshot of a request exactly as `record*` left it: read straight
+    ///      back off the queue in the same call that created it, before any
+    ///      other action can run. Every field but `status` must read the same
+    ///      value forever after — the invariant below checks the live request
+    ///      against this snapshot for every id ever recorded.
+    mapping(uint256 => IExitDelayQueue.ExitRequest) internal _recordedAt;
+
+    /// @dev A public mapping of structs only auto-generates a tuple getter, so
+    ///      this returns the whole snapshot the invariant needs to compare
+    ///      field-by-field against the live request.
+    function recordedAt(uint256 id) external view returns (IExitDelayQueue.ExitRequest memory) {
+        return _recordedAt[id];
+    }
+
     // ── provenance the ingress actions stamp on every request. The Leg-2
     //    recovery routes are registered from these exact values, so a route
     //    resolution is reachable from step one instead of being a dead action.
@@ -144,6 +158,7 @@ contract ExitDelayQueueHandler is Test {
         ) returns (uint256 id) {
             liveIds.push(id);
             floorAtCreation[id] = floor;
+            _recordedAt[id] = queue.getRequest(id);
             ghostQueuedErc20 += amount;
             totalRecorded++;
         } catch {}
@@ -158,6 +173,7 @@ contract ExitDelayQueueHandler is Test {
         returns (uint256 id) {
             liveIds.push(id);
             floorAtCreation[id] = floor;
+            _recordedAt[id] = queue.getRequest(id);
             ghostQueuedNative += amount;
             totalRecorded++;
         } catch {}
@@ -178,6 +194,7 @@ contract ExitDelayQueueHandler is Test {
         ) returns (uint256 id) {
             liveIds.push(id);
             floorAtCreation[id] = floor;
+            _recordedAt[id] = queue.getRequest(id);
             ghostQueuedErc20 += amount;
             totalRecorded++;
         } catch {}
@@ -196,6 +213,7 @@ contract ExitDelayQueueHandler is Test {
         ) {
             liveIds.push(id);
             floorAtCreation[id] = floor;
+            _recordedAt[id] = queue.getRequest(id);
             ghostQueuedNative += amount;
             totalRecorded++;
         } catch {}

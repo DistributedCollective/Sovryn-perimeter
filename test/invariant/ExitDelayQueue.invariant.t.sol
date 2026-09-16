@@ -117,8 +117,10 @@ contract ExitDelayQueueInvariant is Test {
         assertLe(handler.totalTerminal(), handler.totalRecorded());
     }
 
-    //  + metadata immutable + status monotonic across all live ids.
-    // Also active-index membership biconditional (Queued ⇔ in set).
+    // Delay floor holds at creation time, and active-index membership
+    // biconditional (Queued ⇔ in set), across all live ids. Metadata recorded
+    // at creation is pinned separately, in invariant_request_metadata_immutable
+    // below.
     function invariant_status_and_index_consistency() public view {
         uint256 n = handler.liveIdCount();
         for (uint256 i = 0; i < n; ++i) {
@@ -140,6 +142,31 @@ contract ExitDelayQueueInvariant is Test {
                 assertFalse(inSet, "terminal id must NOT be in originator active set");
                 assertFalse(_inActive(r.owner, id), "terminal id must NOT be in owner active set");
             }
+        }
+    }
+
+    /// @notice A recorded request's originator, owner, receiver, token, amount,
+    ///         surfaceId, subProduct, unwrapOnDelivery, createdAt and unlockAt
+    ///         never change after the request is created — only `status` may
+    ///         move. Checked against the handler's own snapshot, taken by
+    ///         reading the request straight back off the queue in the same call
+    ///         that recorded it, for every id the handler has ever recorded.
+    function invariant_request_metadata_immutable() public view {
+        uint256 n = handler.liveIdCount();
+        for (uint256 i = 0; i < n; ++i) {
+            uint256 id = handler.liveIdAt(i);
+            IExitDelayQueue.ExitRequest memory live = queue.getRequest(id);
+            IExitDelayQueue.ExitRequest memory recorded = handler.recordedAt(id);
+            assertEq(live.originator, recorded.originator, "originator changed after record");
+            assertEq(live.owner, recorded.owner, "owner changed after record");
+            assertEq(live.receiver, recorded.receiver, "receiver changed after record");
+            assertEq(live.token, recorded.token, "token changed after record");
+            assertEq(uint256(live.amount), uint256(recorded.amount), "amount changed after record");
+            assertEq(live.surfaceId, recorded.surfaceId, "surfaceId changed after record");
+            assertEq(live.subProduct, recorded.subProduct, "subProduct changed after record");
+            assertEq(live.unwrapOnDelivery, recorded.unwrapOnDelivery, "unwrapOnDelivery changed after record");
+            assertEq(uint256(live.createdAt), uint256(recorded.createdAt), "createdAt changed after record");
+            assertEq(uint256(live.unlockAt), uint256(recorded.unlockAt), "unlockAt changed after record");
         }
     }
 
