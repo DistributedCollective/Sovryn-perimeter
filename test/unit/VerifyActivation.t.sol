@@ -693,7 +693,7 @@ contract VerifyActivationTest is Test {
     function test_resolveRecordingHosts_reverts_on_empty_without_defer() public {
         vm.expectRevert(
             bytes(
-                "C1: QUEUE_ALLOWED_SOURCES is empty -- list every hooked record caller (iToken proxies; the native pusher), or set VERIFY_DEFER_HOSTS=true to defer explicitly"
+                "C1: QUEUE_ALLOWED_SOURCES is empty -- list every hooked record caller (iToken proxies; the Zero BorrowerOperations proxy), or set VERIFY_DEFER_HOSTS=true to defer explicitly"
             )
         );
         script.resolveRecordingHosts(false, new address[](0));

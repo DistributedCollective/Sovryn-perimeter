@@ -79,7 +79,11 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///   export SOVRYN_PROTOCOL_HOST=0x...               # intended host (REQUIRED unless VERIFY_DEFER_HOSTS=true)
 ///   export ZERO_BORROWER_OPERATIONS_HOST=0x...      # intended host (REQUIRED unless VERIFY_DEFER_HOSTS=true)
 ///   export QUEUE_ALLOWED_SOURCES=0xA,0xB,0xC        # every hooked record caller — the iToken proxies and the
-///                                                   # native pusher (REQUIRED unless VERIFY_DEFER_HOSTS=true)
+///                                                   # Zero BorrowerOperations proxy (REQUIRED unless
+///                                                   # VERIFY_DEFER_HOSTS=true). ActivePool, the native pusher,
+///                                                   # is recorded separately by setNativePusher as provenance
+///                                                   # and must NOT be listed here — it has no allowed-source
+///                                                   # gate to pass and calls no record function itself.
 ///   # export VERIFY_DEFER_HOSTS=true                # ONLY to intentionally defer a host's wiring to a later SIP
 ///
 ///   forge script script/06_VerifyActivation.s.sol \
@@ -196,12 +200,12 @@ contract VerifyActivation is Script {
         if (raw.length == 0) {
             require(
                 deferHosts,
-                "C1: QUEUE_ALLOWED_SOURCES is empty -- list every hooked record caller (iToken proxies; the native pusher), or set VERIFY_DEFER_HOSTS=true to defer explicitly"
+                "C1: QUEUE_ALLOWED_SOURCES is empty -- list every hooked record caller (iToken proxies; the Zero BorrowerOperations proxy), or set VERIFY_DEFER_HOSTS=true to defer explicitly"
             );
             console2.log(
                 unicode"⚠ no record callers checked -- every hooked pool ships UNVERIFIED:"
             );
-            console2.log(unicode"    QUEUE_ALLOWED_SOURCES (iToken proxies; the native pusher)");
+            console2.log(unicode"    QUEUE_ALLOWED_SOURCES (iToken proxies; the Zero BorrowerOperations proxy)");
         }
         return raw;
     }
@@ -355,7 +359,7 @@ contract VerifyActivation is Script {
                 unicode"NOTE (scope): the checked list is the two STORAGE HOSTS plus every record caller named in"
             );
             console2.log(
-                unicode"  QUEUE_ALLOWED_SOURCES (the iToken proxies; the native pusher). Each was proved wired AND"
+                unicode"  QUEUE_ALLOWED_SOURCES (the iToken proxies; the Zero BorrowerOperations proxy). Each was proved wired AND"
             );
             console2.log(
                 unicode"  allowed-source. A hooked caller left out of that variable AND off the chain's allow-list is"
