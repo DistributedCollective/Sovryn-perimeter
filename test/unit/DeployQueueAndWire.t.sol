@@ -168,7 +168,7 @@ contract DeployQueueAndWireRunTest is Test {
     function test_validateConfig_accepts_admin_equal_to_owner() public view {
         DeployQueueAndWire.DeployConfig memory cfg = _validCfg();
         cfg.queueAdmin = cfg.queueOwner;
-        // Does not revert: the governance Safe holds both roles at launch.
+        // Does not revert: the same multisig holds both roles at launch.
         script.validateConfig(cfg, false);
     }
 

@@ -42,7 +42,7 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///
 /// @dev Usage:
 ///
-///   export EXIT_DELAY_QUEUE_OWNER=0x...        # queue Owner (governance Safe / timelock)
+///   export EXIT_DELAY_QUEUE_OWNER=0x...        # queue Owner (multisig / timelock)
 ///   export EXIT_DELAY_QUEUE_ADMIN=0x...        # queue Admin (MAY equal Owner; must == controller.admin, set later)
 ///   export WRBTC_ADDRESS=0x...                 # canonical wrapped-RBTC ERC20
 ///   export QUEUE_MIN_DELAY_SECONDS=3600        # per-request delay floor
@@ -201,7 +201,7 @@ contract DeployQueueAndWire is Script {
         );
         require(cfg.queueAdmin != address(0), "05: EXIT_DELAY_QUEUE_ADMIN must be set");
         // No admin-vs-owner separation is enforced: the launch shape has the
-        // governance Safe holding both roles, and the authority split becomes
+        // same multisig holding both roles, and the authority split becomes
         // meaningful only once ownership later moves while the admin stays put.
         require(cfg.wrbtc != address(0), "05: WRBTC_ADDRESS must be set");
 

@@ -12,7 +12,7 @@ import {IExitFeeController} from "../src/interfaces/IExitFeeController.sol";
 /// @notice Runs the canonical activation sequence on a freshly-deployed
 ///         controller (deployed by `03_DeployController.s.sol`, owned by
 ///         the deployer wallet) and queues an Ownable2Step handoff to the
-///         governance Safe. Mirrors the order in `docs/OPERATIONS.md` --
+///         Owner. Mirrors the order in `docs/OPERATIONS.md` --
 ///         setFeeReceiver -> surface policies -> global enable -> setAdmin
 ///         -> transferOwnership.
 ///
@@ -20,7 +20,7 @@ import {IExitFeeController} from "../src/interfaces/IExitFeeController.sol";
 ///         bootstrap fully configured in one batch. admin == final owner
 ///         is a supported shape: one address may hold both roles.
 ///
-///         After this script, the governance Safe must call
+///         After this script, the Owner must call
 ///         `controller.acceptOwnership()` in a follow-up Safe transaction
 ///         to complete the handoff. Until then, the deployer is still the
 ///         active owner but `pendingOwner()` is set to the Safe; no other
@@ -141,7 +141,7 @@ contract BootstrapController is Script {
         console2.log("");
         console2.log("transferOwnership queued -> pendingOwner =", finalOwner);
         console2.log("");
-        console2.log("FINAL STEP (governance Safe): call controller.acceptOwnership()");
+        console2.log("FINAL STEP (Owner): call controller.acceptOwnership()");
         console2.log("Until then, deployer is still the active owner.");
         console2.log("Verify state: forge script script/InspectController.s.sol \\");
         console2.log("              --rpc-url $RSK_RPC --sig 'run(uint256)' <chainId>");

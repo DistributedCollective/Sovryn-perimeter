@@ -48,8 +48,8 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///                    `minimumDelaySeconds` FLOOR itself MAY be 0; that only leaves
 ///                    the per-request DelayBelowFloor backstop inactive — Owner-
 ///                    remediable, NOT a go-live blocker.)
-///           (C1)    queue.owner()      == governanceOwner != deployer
-///                   controller.owner() == governanceOwner != deployer   -- ownership
+///           (C1)    queue.owner()      == intendedOwner != deployer
+///                   controller.owner() == intendedOwner != deployer   -- ownership
 ///           (C2)    for each intended host:
 ///                     host.exitDelayQueue() == queue                    -- wired
 ///                     queue.isAllowedSource(host)                       -- allowed-source
@@ -74,7 +74,7 @@ import {IExitDelayQueueHost} from "../src/interfaces/IExitDelayQueueHost.sol";
 ///
 /// @dev Usage:
 ///
-///   export EXIT_DELAY_GOVERNANCE_OWNER=0x...        # intended Owner (governance Safe/timelock)
+///   export EXIT_DELAY_OWNER=0x...                    # intended Owner (multisig/timelock)
 ///   export EXIT_DELAY_DEPLOYER=0x...                # the broadcast EOA that ran the deploy
 ///   export SOVRYN_PROTOCOL_HOST=0x...               # intended host (REQUIRED unless VERIFY_DEFER_HOSTS=true)
 ///   export ZERO_BORROWER_OPERATIONS_HOST=0x...      # intended host (REQUIRED unless VERIFY_DEFER_HOSTS=true)
@@ -95,10 +95,10 @@ contract VerifyActivation is Script {
     function run(uint256 chainId) external view {
         (ExitFeeController controller, ExitDelayQueue queue) = _loadProxies(chainId);
 
-        // ── Intended governance Owner + deployer EOA (C1). Both REQUIRED non-zero
-        //    so a blank never trivially satisfies "owner == governanceOwner" or the
+        // ── Intended Owner + deployer EOA (C1). Both REQUIRED non-zero
+        //    so a blank never trivially satisfies "owner == intendedOwner" or the
         //    "owner != deployer" check. ──
-        address governanceOwner = vm.envAddress("EXIT_DELAY_GOVERNANCE_OWNER");
+        address intendedOwner = vm.envAddress("EXIT_DELAY_OWNER");
         address deployer = vm.envAddress("EXIT_DELAY_DEPLOYER");
 
         // ── Intended product hosts (C1 host-input safety). BOTH spec-
@@ -115,13 +115,13 @@ contract VerifyActivation is Script {
 
         console2.log("ExitFeeController @", address(controller));
         console2.log("ExitDelayQueue    @", address(queue));
-        console2.log("governance owner  @", governanceOwner);
+        console2.log("intended Owner    @", intendedOwner);
         console2.log("deployer EOA      @", deployer);
         console2.log("intended hosts    :", hosts.length);
         console2.log("  of which record :", recordingHosts.length);
         console2.log("");
 
-        verify(controller, queue, governanceOwner, deployer, hosts, deferHosts);
+        verify(controller, queue, intendedOwner, deployer, hosts, deferHosts);
 
         // (C2) The banner is keyed off the RESOLVED FACT — whether BOTH
         // spec-named hosts were actually C2-checked — NOT the raw VERIFY_DEFER_HOSTS
@@ -382,13 +382,13 @@ contract VerifyActivation is Script {
     ///           - globalDelaySeconds==0  -> "...(unconfigured): controller.globalDelaySeconds==0..."
     ///           - sub-floor delay        -> "...: controller.globalDelaySeconds() < ...floor..."
     ///           - owner still deployer   -> "...(C1): queue/controller.owner() == deployer..."
-    ///           - owner != governance    -> "...(C1): queue/controller.owner() != governance owner..."
+    ///           - owner != intended      -> "...(C1): queue/controller.owner() != the intended Owner..."
     ///           - host not wired         -> "...(C2): host <addr> not wired..."
     ///           - host not allowed-src   -> "...(C2): host <addr> not allowed-source..."
     ///
     /// @param controller       the deployed ExitFeeController proxy
     /// @param queue            the deployed ExitDelayQueue proxy
-    /// @param governanceOwner  the intended governance Owner (must own BOTH; != deployer)
+    /// @param intendedOwner    the intended Owner (must own BOTH; != deployer)
     /// @param deployer         the broadcast EOA that ran the deploy (must own NEITHER)
     /// @param hosts            the intended product hosts (each must be wired + allowed-source)
     /// @param deferHosts       the explicit VERIFY_DEFER_HOSTS opt-in. An EMPTY host
@@ -402,7 +402,7 @@ contract VerifyActivation is Script {
     function verify(
         ExitFeeController controller,
         ExitDelayQueue queue,
-        address governanceOwner,
+        address intendedOwner,
         address deployer,
         address[] memory hosts,
         bool deferHosts
@@ -418,7 +418,7 @@ contract VerifyActivation is Script {
         _verifyGuardian(controller, queue);
         _verifyFloor(controller, queue);
         _verifyNotPaused(queue);
-        _verifyOwnership(controller, queue, governanceOwner, deployer);
+        _verifyOwnership(controller, queue, intendedOwner, deployer);
         _verifyWiring(queue, hosts);
     }
 
@@ -473,28 +473,28 @@ contract VerifyActivation is Script {
     }
 
     // ── C1: ownership. BOTH the queue and the controller must be owned by the
-    //    intended governance Owner and NOT by the deployer EOA — a blank/zero owner
+    //    intended Owner and NOT by the deployer EOA — a blank/zero owner
     //    that silently left the deployer in control (ExitDelayQueue.initialize
     //    resolves a zero owner_ to msg.sender) MUST NOT pass go-live. The
-    //    "owner == deployer" check is reported BEFORE the "== governanceOwner"
+    //    "owner == deployer" check is reported BEFORE the "== intendedOwner"
     //    check so the still-deployer case gets the most actionable message. ──
     function _verifyOwnership(
         ExitFeeController controller,
         ExitDelayQueue queue,
-        address governanceOwner,
+        address intendedOwner,
         address deployer
     ) internal view {
         require(
-            governanceOwner != address(0),
-            "C1: governance owner arg == 0 -- set EXIT_DELAY_GOVERNANCE_OWNER"
+            intendedOwner != address(0),
+            "C1: the intended Owner arg == 0 -- set EXIT_DELAY_OWNER"
         );
         require(
             deployer != address(0),
             "C1: deployer arg == 0 -- set EXIT_DELAY_DEPLOYER"
         );
         require(
-            governanceOwner != deployer,
-            "C1: governance owner == deployer -- they must differ"
+            intendedOwner != deployer,
+            "C1: the intended Owner == deployer -- they must differ"
         );
 
         address queueOwner = queue.owner();
@@ -503,14 +503,14 @@ contract VerifyActivation is Script {
         // still-deployer first (the silent-blank-owner footgun this gate exists for)
         require(
             queueOwner != deployer,
-            "C1: queue.owner() == deployer EOA -- ownership not handed to governance"
+            "C1: queue.owner() == deployer EOA -- ownership not handed to the Owner"
         );
         require(
             ctrlOwner != deployer,
-            "C1: controller.owner() == deployer EOA -- ownership not handed to governance"
+            "C1: controller.owner() == deployer EOA -- ownership not handed to the Owner"
         );
-        require(queueOwner == governanceOwner, "C1: queue.owner() != governance owner");
-        require(ctrlOwner == governanceOwner, "C1: controller.owner() != governance owner");
+        require(queueOwner == intendedOwner, "C1: queue.owner() != the intended Owner");
+        require(ctrlOwner == intendedOwner, "C1: controller.owner() != the intended Owner");
     }
 
     // ── C2: wiring. Every intended host must (i) point its queue pointer at THIS

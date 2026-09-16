@@ -69,7 +69,7 @@ contract MockProductHost is IExitDelayQueueHost {
 ///         misconfig and PASSES on a fully-correct config:
 ///           (a) guardian — "not yet configured" vs mismatch
 ///           (b) floor      — "not yet configured" vs sub-floor
-///           (C1) ownership     — owner still deployer / owner != governance
+///           (C1) ownership     — owner still deployer / owner != the intended Owner
 ///           (C2) wiring        — host not wired / host wired-but-not-allowed-source
 ///         plus the run(chainId) artifact-reading path.
 contract VerifyActivationTest is Test {
@@ -83,9 +83,9 @@ contract VerifyActivationTest is Test {
     address constant GUARDIAN = address(0x6DA12D); // shared single guardian
     address constant OTHER_ADMIN = address(0xBAD); // a DIFFERENT guardian -> mis-wired
     address constant QUEUE_OWNER = address(0x0E7E7); // queue Owner after init; != guardian
-    address constant GOV_OWNER = address(0x60F); // intended governance Owner (C1)
+    address constant INTENDED_OWNER = address(0x60F); // intended Owner (C1)
     address constant DEPLOYER = address(0xDEEDDE); // broadcast EOA (C1: must own neither)
-    address constant STRAY_OWNER = address(0x57A11); // not deployer, not governance (C1)
+    address constant STRAY_OWNER = address(0x57A11); // not deployer, not the intended Owner (C1)
     address constant SOURCE = address(0x50117CE);
 
     uint32 constant FLOOR = 3600;
@@ -105,7 +105,7 @@ contract VerifyActivationTest is Test {
         script = new VerifyActivationHarness();
         wrbtc = new MockWRBTC();
 
-        // ── Controller owned by CTRL_OWNER (so we later transfer it to GOV_OWNER). ──
+        // ── Controller owned by CTRL_OWNER (so we later transfer it to INTENDED_OWNER). ──
         ExitFeeController cImpl = new ExitFeeController();
         bytes memory cInit = abi.encodeWithSelector(ExitFeeController.initialize.selector, CTRL_OWNER);
         controller = ExitFeeController(address(new ERC1967Proxy(address(cImpl), cInit)));
@@ -136,16 +136,16 @@ contract VerifyActivationTest is Test {
         vm.stopPrank();
     }
 
-    /// Hand BOTH contracts to the intended governance Owner (Ownable2Step).
-    function _handToGovernance() internal {
+    /// Hand BOTH contracts to the intended Owner (Ownable2Step).
+    function _handToOwner() internal {
         vm.prank(CTRL_OWNER);
-        controller.transferOwnership(GOV_OWNER);
-        vm.prank(GOV_OWNER);
+        controller.transferOwnership(INTENDED_OWNER);
+        vm.prank(INTENDED_OWNER);
         controller.acceptOwnership();
 
         vm.prank(QUEUE_OWNER);
-        queue.transferOwnership(GOV_OWNER);
-        vm.prank(GOV_OWNER);
+        queue.transferOwnership(INTENDED_OWNER);
+        vm.prank(INTENDED_OWNER);
         queue.acceptOwnership();
     }
 
@@ -158,19 +158,19 @@ contract VerifyActivationTest is Test {
     /// Drive the full comprehensive gate with the canonical args (non-deferred: the
     /// default single-host list is non-empty so the C1 empty-list guard is satisfied).
     function _verify() internal view {
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, _hosts(), false);
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, _hosts(), false);
     }
 
     /// A fully-correct deploy: config done, ownership handed off, host wired+allowed.
     function _makeFullyCorrect() internal {
         _configController(GUARDIAN, FLOOR);
-        _handToGovernance();
+        _handToOwner();
     }
 
     // ─── (a) guardian: distinct "not yet configured" vs mismatch ─────
 
     function test_verify_reverts_distinctly_when_admin_unconfigured() public {
-        _handToGovernance(); // ownership fine; admin still 0
+        _handToOwner(); // ownership fine; admin still 0
         assertEq(controller.admin(), address(0), "precondition: admin unset");
         vm.expectRevert(bytes("guardian unconfigured: controller.admin()==0 -- run step 5 (setAdmin) first"));
         _verify();
@@ -178,7 +178,7 @@ contract VerifyActivationTest is Test {
 
     function test_verify_reverts_on_admin_mismatch() public {
         _configController(OTHER_ADMIN, FLOOR); // configured, admin != queue.admin
-        _handToGovernance();
+        _handToOwner();
         vm.expectRevert(
             bytes("single guardian violated: controller.admin() != queue.admin() -- single guardian violated")
         );
@@ -190,7 +190,7 @@ contract VerifyActivationTest is Test {
     function test_verify_reverts_distinctly_when_global_delay_unconfigured() public {
         vm.prank(CTRL_OWNER);
         controller.setAdmin(GUARDIAN); // step 5 only; delay still 0
-        _handToGovernance();
+        _handToOwner();
         vm.expectRevert(
             bytes(
                 "delay unconfigured: controller.globalDelaySeconds()==0 -- run step 4 (setGlobalDelaySeconds) first"
@@ -201,7 +201,7 @@ contract VerifyActivationTest is Test {
 
     function test_verify_reverts_distinctly_on_subfloor_global_delay() public {
         _configController(GUARDIAN, FLOOR - 1);
-        _handToGovernance();
+        _handToOwner();
         vm.expectRevert(
             bytes(
                 "sub-floor delay: controller.globalDelaySeconds() < queue.minimumDelaySeconds() -- sub-floor delay self-bricks exits"
@@ -210,17 +210,17 @@ contract VerifyActivationTest is Test {
         _verify();
     }
 
-    // ─── (C1) ownership: owner still deployer / owner != governance ────────
+    // ─── (C1) ownership: owner still deployer / owner != the intended Owner ─
 
     /// Queue still owned by the deployer EOA (ownership never handed off): the
     /// still-deployer check fires with the C1 "== deployer" message.
     function test_verify_reverts_when_queue_owner_still_deployer() public {
         _configController(GUARDIAN, FLOOR);
-        // Hand ONLY the controller to governance; move the queue to the DEPLOYER
+        // Hand ONLY the controller to the Owner; move the queue to the DEPLOYER
         // (simulating the silent-blank-owner footgun: deployer left in control).
         vm.prank(CTRL_OWNER);
-        controller.transferOwnership(GOV_OWNER);
-        vm.prank(GOV_OWNER);
+        controller.transferOwnership(INTENDED_OWNER);
+        vm.prank(INTENDED_OWNER);
         controller.acceptOwnership();
 
         vm.prank(QUEUE_OWNER);
@@ -229,7 +229,7 @@ contract VerifyActivationTest is Test {
         queue.acceptOwnership();
 
         vm.expectRevert(
-            bytes("C1: queue.owner() == deployer EOA -- ownership not handed to governance")
+            bytes("C1: queue.owner() == deployer EOA -- ownership not handed to the Owner")
         );
         _verify();
     }
@@ -237,10 +237,10 @@ contract VerifyActivationTest is Test {
     /// Controller still owned by the deployer EOA.
     function test_verify_reverts_when_controller_owner_still_deployer() public {
         _configController(GUARDIAN, FLOOR);
-        // Queue -> governance; controller -> deployer.
+        // Queue -> Owner; controller -> deployer.
         vm.prank(QUEUE_OWNER);
-        queue.transferOwnership(GOV_OWNER);
-        vm.prank(GOV_OWNER);
+        queue.transferOwnership(INTENDED_OWNER);
+        vm.prank(INTENDED_OWNER);
         queue.acceptOwnership();
 
         vm.prank(CTRL_OWNER);
@@ -250,39 +250,39 @@ contract VerifyActivationTest is Test {
 
         vm.expectRevert(
             bytes(
-                "C1: controller.owner() == deployer EOA -- ownership not handed to governance"
+                "C1: controller.owner() == deployer EOA -- ownership not handed to the Owner"
             )
         );
         _verify();
     }
 
     /// Queue owned by a NON-deployer address that is also not the intended
-    /// governance Owner: the "!= governance owner" message fires.
-    function test_verify_reverts_when_queue_owner_not_governance() public {
+    /// Owner: the "!= the intended Owner" message fires.
+    function test_verify_reverts_when_queue_owner_not_intended_owner() public {
         _configController(GUARDIAN, FLOOR);
         address strayOwner = STRAY_OWNER;
-        // controller -> governance (correct)
+        // controller -> the intended Owner (correct)
         vm.prank(CTRL_OWNER);
-        controller.transferOwnership(GOV_OWNER);
-        vm.prank(GOV_OWNER);
+        controller.transferOwnership(INTENDED_OWNER);
+        vm.prank(INTENDED_OWNER);
         controller.acceptOwnership();
-        // queue -> stray (not deployer, not governance)
+        // queue -> stray (not deployer, not the intended Owner)
         vm.prank(QUEUE_OWNER);
         queue.transferOwnership(strayOwner);
         vm.prank(strayOwner);
         queue.acceptOwnership();
 
-        vm.expectRevert(bytes("C1: queue.owner() != governance owner"));
+        vm.expectRevert(bytes("C1: queue.owner() != the intended Owner"));
         _verify();
     }
 
-    function test_verify_reverts_when_controller_owner_not_governance() public {
+    function test_verify_reverts_when_controller_owner_not_intended_owner() public {
         _configController(GUARDIAN, FLOOR);
         address strayOwner = STRAY_OWNER;
-        // queue -> governance (correct)
+        // queue -> the intended Owner (correct)
         vm.prank(QUEUE_OWNER);
-        queue.transferOwnership(GOV_OWNER);
-        vm.prank(GOV_OWNER);
+        queue.transferOwnership(INTENDED_OWNER);
+        vm.prank(INTENDED_OWNER);
         queue.acceptOwnership();
         // controller -> stray
         vm.prank(CTRL_OWNER);
@@ -290,16 +290,16 @@ contract VerifyActivationTest is Test {
         vm.prank(strayOwner);
         controller.acceptOwnership();
 
-        vm.expectRevert(bytes("C1: controller.owner() != governance owner"));
+        vm.expectRevert(bytes("C1: controller.owner() != the intended Owner"));
         _verify();
     }
 
-    /// C1 arg hygiene: a zero governance-owner arg is a config error, not a pass.
-    function test_verify_reverts_when_governance_owner_arg_zero() public {
+    /// C1 arg hygiene: a zero intended-Owner arg is a config error, not a pass.
+    function test_verify_reverts_when_intended_owner_arg_zero() public {
         _makeFullyCorrect();
         vm.expectRevert(
             bytes(
-                "C1: governance owner arg == 0 -- set EXIT_DELAY_GOVERNANCE_OWNER"
+                "C1: the intended Owner arg == 0 -- set EXIT_DELAY_OWNER"
             )
         );
         script.verify(controller, queue, address(0), DEPLOYER, _hosts(), false);
@@ -308,15 +308,15 @@ contract VerifyActivationTest is Test {
     function test_verify_reverts_when_deployer_arg_zero() public {
         _makeFullyCorrect();
         vm.expectRevert(bytes("C1: deployer arg == 0 -- set EXIT_DELAY_DEPLOYER"));
-        script.verify(controller, queue, GOV_OWNER, address(0), _hosts(), false);
+        script.verify(controller, queue, INTENDED_OWNER, address(0), _hosts(), false);
     }
 
-    function test_verify_reverts_when_governance_owner_equals_deployer() public {
+    function test_verify_reverts_when_intended_owner_equals_deployer() public {
         _makeFullyCorrect();
         vm.expectRevert(
-            bytes("C1: governance owner == deployer -- they must differ")
+            bytes("C1: the intended Owner == deployer -- they must differ")
         );
-        script.verify(controller, queue, GOV_OWNER, GOV_OWNER, _hosts(), false);
+        script.verify(controller, queue, INTENDED_OWNER, INTENDED_OWNER, _hosts(), false);
     }
 
     // ─── (C2) wiring: host not wired / host wired-but-not-allowed-source ───
@@ -358,7 +358,7 @@ contract VerifyActivationTest is Test {
                 )
             )
         );
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, hs, false);
     }
 
     /// A zero host slipped into the intended list is rejected (defensive C2).
@@ -367,7 +367,7 @@ contract VerifyActivationTest is Test {
         address[] memory hs = new address[](1);
         hs[0] = address(0);
         vm.expectRevert(bytes("C2: intended host == 0"));
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, hs, false);
     }
 
     // ─── (C1) host-input safety: required inputs + explicit VERIFY_DEFER_HOSTS ─
@@ -489,7 +489,7 @@ contract VerifyActivationTest is Test {
                 "empty intended-host list without VERIFY_DEFER_HOSTS=true -- refusing vacuous wiring PASS"
             )
         );
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, empty, false);
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, empty, false);
     }
 
     /// verify(..., empty list, deferHosts=true): PASSES — the legitimate qualified /
@@ -498,7 +498,7 @@ contract VerifyActivationTest is Test {
     function test_verify_passes_on_empty_host_list_with_explicit_defer() public {
         _makeFullyCorrect();
         address[] memory empty = new address[](0);
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, empty, true); // does not revert
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, empty, true); // does not revert
     }
 
     /// (C1 regression) A NON-empty list with deferHosts=false still passes the empty-
@@ -546,7 +546,7 @@ contract VerifyActivationTest is Test {
 
     function test_verify_passes_when_delay_above_floor() public {
         _configController(GUARDIAN, FLOOR * 2);
-        _handToGovernance();
+        _handToOwner();
         _verify();
     }
 
@@ -575,7 +575,7 @@ contract VerifyActivationTest is Test {
         _redeployQueueWithZeroFloor();
         assertEq(queue.minimumDelaySeconds(), 0, "precondition: zero floor");
         _configController(GUARDIAN, 1); // smallest positive active delay
-        _handToGovernance();
+        _handToOwner();
         _verify(); // does not revert — floor==0 is allowed, delay>0 satisfies C2
     }
 
@@ -585,7 +585,7 @@ contract VerifyActivationTest is Test {
         _redeployQueueWithZeroFloor();
         vm.prank(CTRL_OWNER);
         controller.setAdmin(GUARDIAN); // guardian ok; globalDelaySeconds stays 0
-        _handToGovernance();
+        _handToOwner();
         vm.expectRevert(
             bytes(
                 "delay unconfigured: controller.globalDelaySeconds()==0 -- run step 4 (setGlobalDelaySeconds) first"
@@ -606,7 +606,7 @@ contract VerifyActivationTest is Test {
         address[] memory hs = new address[](2);
         hs[0] = address(host);
         hs[1] = address(host2);
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, hs, false);
     }
 
     // ─── Ordering: guardian < floor < ownership < wiring (first unmet wins) ─
@@ -662,7 +662,7 @@ contract VerifyActivationTest is Test {
                 )
             )
         );
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, hs, false);
     }
 
     function test_verify_reverts_when_a_recording_host_is_not_wired() public {
@@ -684,7 +684,7 @@ contract VerifyActivationTest is Test {
                 )
             )
         );
-        script.verify(controller, queue, GOV_OWNER, DEPLOYER, hs, false);
+        script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, hs, false);
     }
 
     /// An empty recording list is the fresh-shell footgun the spec-named hosts
@@ -770,7 +770,7 @@ contract VerifyActivationTest is Test {
             string.concat(dir, "ExitDelayQueue.json"),
             string.concat('{"proxyAddress":"', vm.toString(address(queue)), '"}')
         );
-        vm.setEnv("EXIT_DELAY_GOVERNANCE_OWNER", vm.toString(GOV_OWNER));
+        vm.setEnv("EXIT_DELAY_OWNER", vm.toString(INTENDED_OWNER));
         vm.setEnv("EXIT_DELAY_DEPLOYER", vm.toString(DEPLOYER));
     }
 
@@ -837,7 +837,7 @@ contract VerifyActivationTest is Test {
         globalDelay = uint32(bound(globalDelay, 1, type(uint32).max));
         address ctrlAdmin = sameAdmin ? GUARDIAN : OTHER_ADMIN;
         _configController(ctrlAdmin, globalDelay);
-        _handToGovernance(); // ownership + wiring always correct here
+        _handToOwner(); // ownership + wiring always correct here
 
         // Guardian is checked first, then floor. Ownership/wiring are correct, so
         // the outcome is fully determined by (sameAdmin, globalDelay).
