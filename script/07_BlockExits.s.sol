@@ -149,15 +149,15 @@ contract BlockExits is Script {
         } else if (a == keccak256("unblacklist")) {
             _clear(false, actors, ids);
         } else if (a == keccak256("verify-freeze")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen);
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen, true);
         } else if (a == keccak256("verify-blacklist")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Blacklisted);
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Blacklisted, true);
         } else if (a == keccak256("verify-downgrade")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen);
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.Frozen, false);
         } else if (a == keccak256("verify-unfreeze")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None);
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None, false);
         } else if (a == keccak256("verify-unblacklist")) {
-            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None);
+            _verify(actors, ids, freezeReceiver, IExitDelayQueue.BlockState.None, false);
         } else if (a == keccak256("verify-pause")) {
             _verifyPause(true);
         } else if (a == keccak256("verify-unpause")) {
@@ -472,12 +472,18 @@ contract BlockExits is Script {
     ///      ids, and refuses unless every one of them reads `target` - the state
     ///      the submitted call was supposed to produce - so a failed inner call
     ///      is not read as confirmation from a multisig transaction that itself
-    ///      reported success.
+    ///      reported success. `acceptStronger` widens the check to "at least as
+    ///      strong as `target`": a by-request freeze over an already-blacklisted
+    ///      party correctly holds the stronger state instead of moving to Frozen,
+    ///      and that must read as confirmed, not as a freeze that failed. A
+    ///      downgrade or a clear never sets it - there, a party still reading a
+    ///      stronger state than the target is the genuine unconfirmed case.
     function _verify(
         address[] memory actorsIn,
         uint256[] memory ids,
         bool freezeReceiver,
-        IExitDelayQueue.BlockState target
+        IExitDelayQueue.BlockState target,
+        bool acceptStronger
     ) internal view {
         address[] memory actors = ids.length > 0 ? _partiesBehind(ids, freezeReceiver) : actorsIn;
         require(actors.length > 0, "set BLOCK_ACTORS or BLOCK_REQUEST_IDS");
@@ -485,6 +491,7 @@ contract BlockExits is Script {
         bool mismatchFound;
         address mismatchAddr;
         IExitDelayQueue.BlockState mismatchState;
+        bool anyStronger;
         for (uint256 i = 0; i < actors.length; ++i) {
             IExitDelayQueue.BlockState state = queue.blockStateOf(actors[i]);
             console2.log(
@@ -497,7 +504,9 @@ contract BlockExits is Script {
                     vm.toString(queue.blockTrigger(actors[i]))
                 )
             );
-            if (!mismatchFound && state != target) {
+            bool strongerThanAsked = acceptStronger && uint8(state) > uint8(target);
+            if (strongerThanAsked) anyStronger = true;
+            if (!mismatchFound && state != target && !strongerThanAsked) {
                 mismatchFound = true;
                 mismatchAddr = actors[i];
                 mismatchState = state;
@@ -516,7 +525,15 @@ contract BlockExits is Script {
                 )
             );
         }
-        console2.log(string.concat("CONFIRMED: every resolved address reads ", _stateName(target), "."));
+        console2.log(
+            anyStronger
+                ? string.concat(
+                    "CONFIRMED: every resolved address reads ",
+                    _stateName(target),
+                    " or a stronger block state it already held."
+                )
+                : string.concat("CONFIRMED: every resolved address reads ", _stateName(target), ".")
+        );
     }
 
     // --- Helpers --------------------------------------------------------

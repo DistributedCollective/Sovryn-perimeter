@@ -370,6 +370,22 @@ contract BlockExitsTest is Test {
         script.dispatch("verify-freeze", _noAddrs(), _ids(id), true, "");
     }
 
+    /// @notice A by-request freeze carries evidence, so the queue accepts it
+    ///         over an already-blacklisted party and holds the stronger state
+    ///         instead of moving it down to Frozen. The verify action must read
+    ///         that as confirmed - the party is more blocked than a Frozen
+    ///         read would show, not less.
+    function test_verify_freeze_confirms_an_already_blacklisted_party() public {
+        uint256 id = _record(ORIG, OWNR, RCVR);
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+
+        vm.prank(ADMIN);
+        queue.freezeFromRequest(_ids(id), false, keccak256("second look"));
+
+        script.dispatch("verify-freeze", _noAddrs(), _ids(id), false, "");
+    }
+
     /// @notice Same shape for blacklist: unconfirmed while the party still reads
     ///         None, confirmed once it reads Blacklisted.
     function test_verify_blacklist_confirms_only_a_blacklisted_party() public {
