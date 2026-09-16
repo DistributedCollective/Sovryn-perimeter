@@ -90,6 +90,10 @@ contract BlockExitsHarness is BlockExits {
     function verifyActionFor(string memory action) external pure returns (string memory) {
         return _verifyActionFor(action);
     }
+
+    function requestEvidenced(uint256 id) external view returns (bool) {
+        return _requestEvidenced(id);
+    }
 }
 
 /// @title  Emergency block preview - 07_BlockExits
@@ -541,6 +545,44 @@ contract BlockExitsTest is Test {
             )
         );
         script.dispatch("verify-freeze", _noAddrs(), _ids(held), "");
+    }
+
+    /// @notice A held request's parties can already read the target state
+    ///         through an action unrelated to the request being verified -
+    ///         here, the originator was blacklisted before `held` was ever
+    ///         recorded, so no by-request call for `held` ran at all. Verify
+    ///         must not claim this incident's own evidence was written on
+    ///         chain for `held`: the state comparison alone cannot tell "this
+    ///         id's call ran" apart from "the party was already blocked", but
+    ///         `_requestEvidenced` can, and must read false here even though
+    ///         `dispatch` itself does not revert - the party is still
+    ///         genuinely blocked, so refusing outright would be wrong.
+    function test_verify_by_request_flags_state_reached_without_this_ids_own_evidence() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        uint256 held = _record(ORIG, OWNR, RCVR);
+
+        // Never executed: no freezeFromRequest/blacklistFromRequest call for
+        // `held` - simulating the on-chain call reverting or being skipped
+        // outright, with the state comparison alone unable to tell which.
+        assertFalse(script.requestEvidenced(held));
+
+        // The party is genuinely still blocked, so verification still
+        // succeeds - it is the CONFIRMED banner's honesty that was at stake,
+        // not whether the exit is held.
+        script.dispatch("verify-freeze", _noAddrs(), _ids(held), "");
+        assertFalse(script.requestEvidenced(held));
+    }
+
+    /// @notice The positive case: once the by-request call actually runs,
+    ///         `_requestEvidenced` reads true for the id that ran it.
+    function test_verify_by_request_evidence_matches_a_call_that_actually_ran() public {
+        uint256 clean = _record(ORIG, OWNR, RCVR);
+        vm.prank(ADMIN);
+        queue.freezeFromRequest(_ids(clean), true, keccak256("drill"));
+
+        assertTrue(script.requestEvidenced(clean));
+        script.dispatch("verify-freeze", _noAddrs(), _ids(clean), "");
     }
 
     function test_verify_requires_input() public {

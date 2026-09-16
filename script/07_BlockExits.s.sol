@@ -701,6 +701,29 @@ contract BlockExits is Script {
                     :
                     "receiver was blocked but belongs to an already-held request - it should have been left alone";
             }
+
+            // Evidence check, independent of the state comparison above: a
+            // party reading `target` or stronger is not proof that THIS id's
+            // own call is what put it there. `_setBlock` only writes
+            // `_blockTrigger` for a party when the call touching it actually
+            // ran, so `blockTrigger(party) == ids[i]` is the on-chain link
+            // back to this exact request. Without it, the state comparison
+            // may have passed only because the party already sat at or above
+            // `target` from an earlier, unrelated action while this specific
+            // call never ran (it reverted, or - for a held request under
+            // freeze - was never submitted). Either way no withdrawal
+            // escapes, so this does not fail verification; it only keeps the
+            // CONFIRMED banner honest about whose evidence backs it.
+            if (partiesOk && !mismatchFound && !_requestEvidenced(ids[i])) {
+                console2.log(
+                    string.concat(
+                        "    NOTE: request #",
+                        vm.toString(ids[i]),
+                        " reads the expected state, but this action's own evidence was not recorded",
+                        " - the block predates it."
+                    )
+                );
+            }
         }
 
         if (mismatchFound) {
@@ -717,6 +740,24 @@ contract BlockExits is Script {
         console2.log(
             "CONFIRMED: every clean request's receiver is blocked and every held request's receiver is untouched."
         );
+    }
+
+    /// @dev True when request `id`'s own by-request call is the reason its
+    ///      resolved originator (and owner, if distinct) currently carry the
+    ///      block they read - i.e. `_setBlock` actually ran while processing
+    ///      `id` and last wrote `_blockTrigger` for both. False means their
+    ///      current state, whatever it is, was not produced by this id's own
+    ///      call - it predates it or comes from a different one. Read after
+    ///      the fact, so this deliberately does not (cannot) distinguish "the
+    ///      call for this id was skipped by design" from "it was submitted
+    ///      and reverted" - both leave the same on-chain trace, which is
+    ///      exactly the ambiguity `_verifyByRequest` surfaces rather than
+    ///      papering over.
+    function _requestEvidenced(uint256 id) internal view returns (bool) {
+        IExitDelayQueue.ExitRequest memory r = queue.getRequest(id);
+        if (queue.blockTrigger(r.originator) != id) return false;
+        if (r.owner != r.originator && queue.blockTrigger(r.owner) != id) return false;
+        return true;
     }
 
     // --- Helpers --------------------------------------------------------
