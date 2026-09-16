@@ -1754,7 +1754,7 @@ contract ExitDelayQueueTest is Test {
     ///         ActorBlocked(receiver) EVEN WITH a clean altReceiver. This is the
     ///         must-fix regression: a blocked/hacked original receiver refuses
     ///         recovery entirely (→ Leg-3), so it can never be bypassed by naming a
-    ///         fresh altReceiver. The exact bypass the review caught.
+    ///         clean alternate receiver instead.
     function test_recover_reverts_if_stored_receiver_blocked_even_with_clean_alt() public {
         _queueErc20(10 ether); // stored receiver = RCVR
         vm.warp(block.timestamp + DELAY);
