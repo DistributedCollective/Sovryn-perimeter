@@ -257,11 +257,17 @@ contract EchidnaExitDelayQueue {
     ///      reaches `_requireNotBlocked` at all, so `executedWhileBlockedAttempts`
     ///      below only counts an attempt once this reads true - never one that
     ///      failed on an earlier check while merely observing a party blocked.
+    ///      `execute`/`executeMany` call `queue.executeExit`/`executeExits`
+    ///      directly, so `_executeOne` sees THIS HARNESS as `msg.sender`, not
+    ///      whichever address Echidna used to call into `execute` itself -
+    ///      the party check below must therefore read `address(this)`, the
+    ///      same convention `executeMany`'s own `pair` check already uses a
+    ///      few lines above.
     function _reachesBlockGate(IExitDelayQueue.ExitRequest memory r, bool paused) internal view returns (bool) {
         if (paused) return false;
         if (r.status != IExitDelayQueue.ExitStatus.Queued) return false;
         if (block.timestamp < r.unlockAt) return false;
-        bool party = msg.sender == r.originator || msg.sender == r.owner;
+        bool party = address(this) == r.originator || address(this) == r.owner;
         return party || r.owner.code.length > 0;
     }
 
