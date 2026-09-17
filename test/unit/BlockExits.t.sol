@@ -489,6 +489,36 @@ contract BlockExitsTest is Test {
         assertEq(uint256(queue.blockStateOf(RCVR2)), uint256(IExitDelayQueue.BlockState.None));
     }
 
+    /// @notice A clean request's freeze call succeeds and blocks its receiver
+    ///         alongside it - then, before the responder runs verify, the
+    ///         Admin separately unfreezes the receiver alone (a real,
+    ///         reachable, onlyAdminOrOwner action unrelated to this incident).
+    ///         The receiver's recorded trigger is cleared by that call, so it
+    ///         no longer names this batch; verify must not read the missing
+    ///         trigger as "this was the held group, receiver correctly left
+    ///         alone" and print a clean CONFIRMED for a receiver that used to
+    ///         be blocked and no longer is.
+    function test_verify_freeze_does_not_confirm_a_receiver_unfrozen_after_the_fact() public {
+        uint256 clean = _record(ORIG, OWNR, RCVR);
+
+        vm.prank(ADMIN);
+        queue.freezeFromRequest(_ids(clean), true, keccak256("drill"));
+
+        vm.prank(ADMIN);
+        queue.unfreeze(RCVR);
+
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "NOT CONFIRMED: ",
+                    vm.toString(RCVR),
+                    " - receiver's own freeze call set its block, but it now reads None - a later action must have cleared it; this cannot be confirmed as still blocked - the call did not take effect"
+                )
+            )
+        );
+        script.dispatch("verify-freeze", _noAddrs(), _ids(clean), "");
+    }
+
     /// @notice The multisig reports success even when the call inside it
     ///         failed, so before the freeze executes, verify must refuse.
     function test_verify_freeze_refuses_before_the_call_executes() public {

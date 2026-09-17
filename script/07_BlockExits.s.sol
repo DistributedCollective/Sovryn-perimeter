@@ -648,7 +648,13 @@ contract BlockExits is Script {
     ///      request - freeze never touches it, so only the party that was
     ///      already blocked is guaranteed to still read blocked, not both;
     ///      blacklist escalates it exactly as it does a clean request, so both
-    ///      must reach `target`.
+    ///      must reach `target`. Under freeze specifically, a receiver that
+    ///      reads excluded from the batch but whose own request IS evidenced
+    ///      (`_requestEvidenced`) was clean, not held, when submitted - its
+    ///      exclusion means a later, unrelated action cleared what this call
+    ///      set, not that the call left it alone by design. That is flagged
+    ///      rather than confirmed: this function proves what current chain
+    ///      state shows, not what an intervening admin action may have undone.
     function _verifyByRequest(uint256[] memory ids, IExitDelayQueue.BlockState target) internal view {
         bool mismatchFound;
         address mismatchAddr;
@@ -698,15 +704,14 @@ contract BlockExits is Script {
                 mismatchNote = "originator/owner did not reach the expected block state";
             }
 
-            bool receiverOk =
-                receiverIncluded ? uint8(rState) >= uint8(target) : uint8(rState) < uint8(target);
-            if (!mismatchFound && !receiverOk) {
-                mismatchFound = true;
-                mismatchAddr = r.receiver;
-                mismatchNote = receiverIncluded
-                    ? "receiver did not reach the expected block state"
-                    :
-                    "receiver was blocked but belongs to an already-held request - it should have been left alone";
+            if (!mismatchFound) {
+                (bool receiverOk, string memory receiverNote) =
+                    _receiverCheck(ids, i, target, rState, receiverIncluded);
+                if (!receiverOk) {
+                    mismatchFound = true;
+                    mismatchAddr = r.receiver;
+                    mismatchNote = receiverNote;
+                }
             }
 
             // Evidence check, independent of the state comparison above: a
@@ -746,6 +751,47 @@ contract BlockExits is Script {
         }
         console2.log(
             "CONFIRMED: every clean request's receiver is blocked and every held request's receiver is untouched."
+        );
+    }
+
+    /// @dev Split out of `_verifyByRequest` to keep its own frame inside the
+    ///      stack limit. Included receivers must reach `target`; excluded
+    ///      ones must read below it UNLESS this is the freeze-specific gap a
+    ///      cleared trigger can hide: `_blockByRequest` only ever submits the
+    ///      clean group under freeze, always with the receiver included, so a
+    ///      request whose own call is evidenced (`_requestEvidenced`) was
+    ///      clean when submitted - if its receiver is not recognized as part
+    ///      of this batch either, some later, unrelated action (e.g. an
+    ///      Admin `unfreeze` on the receiver alone) cleared what this call
+    ///      set. Current chain state alone cannot then tell "genuinely held,
+    ///      never touched" apart from "was blocked, later cleared", so this
+    ///      is flagged rather than confirmed. Blacklist has no equivalent
+    ///      gap: it submits the held group too, so an evidenced-but-excluded
+    ///      held receiver there is the intended `freezeReceiver=false`
+    ///      shape, not drift - the check is scoped to `target == Frozen`.
+    function _receiverCheck(
+        uint256[] memory ids,
+        uint256 i,
+        IExitDelayQueue.BlockState target,
+        IExitDelayQueue.BlockState rState,
+        bool receiverIncluded
+    ) internal view returns (bool ok, string memory note) {
+        if (receiverIncluded) {
+            return (uint8(rState) >= uint8(target), "receiver did not reach the expected block state");
+        }
+        if (target == IExitDelayQueue.BlockState.Frozen && _requestEvidenced(ids[i])) {
+            return (
+                false,
+                string.concat(
+                    "receiver's own freeze call set its block, but it now reads ",
+                    _stateName(rState),
+                    " - a later action must have cleared it; this cannot be confirmed as still blocked"
+                )
+            );
+        }
+        return (
+            uint8(rState) < uint8(target),
+            "receiver was blocked but belongs to an already-held request - it should have been left alone"
         );
     }
 
