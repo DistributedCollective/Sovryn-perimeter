@@ -519,6 +519,39 @@ contract BlockExitsTest is Test {
         assertEq(uint256(queue.blockStateOf(OWNR2)), uint256(IExitDelayQueue.BlockState.Blacklisted));
     }
 
+    /// @notice Two clean requests routed to the same receiver - the shape a set
+    ///         of malicious withdrawals sharing one payout address produces -
+    ///         must both confirm. `_blockTrigger` keeps only the id that
+    ///         processed the receiver last, so the earlier of the two cannot
+    ///         be read as clean from its own id alone; verify must still
+    ///         confirm both rather than mistake the earlier one for held.
+    function test_verify_freeze_confirms_two_clean_requests_sharing_one_receiver() public {
+        uint256 a = _record(ORIG, OWNR, RCVR);
+        uint256 b = _record(ORIG2, OWNR2, RCVR);
+
+        vm.prank(ADMIN);
+        queue.freezeFromRequest(_ids2(a, b), true, keccak256("drill"));
+
+        script.dispatch("verify-freeze", _noAddrs(), _ids2(a, b), "");
+
+        assertEq(uint256(queue.blockStateOf(RCVR)), uint256(IExitDelayQueue.BlockState.Frozen));
+    }
+
+    /// @notice Same shape under blacklist: both clean requests sharing a
+    ///         receiver must confirm, not only the one whose id happens to be
+    ///         the last to have touched the shared receiver's trigger.
+    function test_verify_blacklist_confirms_two_clean_requests_sharing_one_receiver() public {
+        uint256 a = _record(ORIG, OWNR, RCVR);
+        uint256 b = _record(ORIG2, OWNR2, RCVR);
+
+        vm.prank(ADMIN);
+        queue.blacklistFromRequest(_ids2(a, b), true, keccak256("drill"));
+
+        script.dispatch("verify-blacklist", _noAddrs(), _ids2(a, b), "");
+
+        assertEq(uint256(queue.blockStateOf(RCVR)), uint256(IExitDelayQueue.BlockState.Blacklisted));
+    }
+
     /// @notice The held group's receiver must read below `target` to confirm -
     ///         it is not enough for it to merely differ from the id under
     ///         test. Here the receiver is already blocked for an unrelated

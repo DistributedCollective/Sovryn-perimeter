@@ -630,18 +630,24 @@ contract BlockExits is Script {
     ///      held groups apart rather than re-deriving them from the current
     ///      originator/owner state - after a blacklist both groups read the
     ///      same target state on those two parties, so that state alone cannot
-    ///      say which group a request was in. `blockTrigger(receiver) == id` can:
-    ///      it reads true only when processing this exact id is what last set
-    ///      the receiver's trigger, which happens only when the receiver was
-    ///      named in that id's own call - i.e. only for the clean group, under
-    ///      either action. For a request that reads clean this way, originator,
-    ///      owner and receiver must all reach `target` or stronger. For one that
-    ///      reads held, the receiver must still read below `target` (the call
-    ///      left it alone); its originator and owner are checked at the
-    ///      strength each action actually gives a held request - freeze never
-    ///      touches it, so only the party that was already blocked is
-    ///      guaranteed to still read blocked, not both; blacklist escalates it
-    ///      exactly as it does a clean request, so both must reach `target`.
+    ///      say which group a request was in. `_receiverIncludedInBatch` reads
+    ///      the group instead: a receiver counts as included when its recorded
+    ///      trigger names ANY id in this same batch that also resolves to that
+    ///      receiver, not only `ids[i]` itself - the trigger keeps only the
+    ///      last id that wrote it, so two ids sharing a receiver in the same
+    ///      clean-group call would otherwise leave the earlier one unmatched
+    ///      even though its receiver was blocked alongside it. This reads true
+    ///      only for the clean group, under either action - a receiver an
+    ///      unrelated batch or a flat lever blocked still names an id outside
+    ///      this batch, or no id at all. For a request that reads clean this
+    ///      way, originator, owner and receiver must all reach `target` or
+    ///      stronger. For one that reads held, the receiver must still read
+    ///      below `target` (the call left it alone); its originator and owner
+    ///      are checked at the strength each action actually gives a held
+    ///      request - freeze never touches it, so only the party that was
+    ///      already blocked is guaranteed to still read blocked, not both;
+    ///      blacklist escalates it exactly as it does a clean request, so both
+    ///      must reach `target`.
     function _verifyByRequest(uint256[] memory ids, IExitDelayQueue.BlockState target) internal view {
         bool mismatchFound;
         address mismatchAddr;
@@ -657,7 +663,7 @@ contract BlockExits is Script {
             IExitDelayQueue.BlockState oState = queue.blockStateOf(r.originator);
             IExitDelayQueue.BlockState wState = queue.blockStateOf(r.owner);
             IExitDelayQueue.BlockState rState = queue.blockStateOf(r.receiver);
-            bool receiverIncluded = queue.blockTrigger(r.receiver) == ids[i];
+            bool receiverIncluded = _receiverIncludedInBatch(ids, i, r.receiver);
 
             console2.log(
                 string.concat(
@@ -740,6 +746,31 @@ contract BlockExits is Script {
         console2.log(
             "CONFIRMED: every clean request's receiver is blocked and every held request's receiver is untouched."
         );
+    }
+
+    /// @dev True when `receiver`'s recorded trigger names this batch's own
+    ///      handling of it: `ids[i]` itself, or another id in `ids` that also
+    ///      resolves to `receiver`. `_blockTrigger` keeps only the last id that
+    ///      wrote it, so checking `ids[i]` alone misreads every id but the last
+    ///      one when several ids in the same batch share a receiver - the
+    ///      shape a set of malicious withdrawals routed to one payout address
+    ///      produces. Checking the whole batch instead is still specific to
+    ///      it: a trigger of 0 (never blocked, or blocked by a flat lever that
+    ///      carries no id) or one naming an id outside `ids` (an earlier,
+    ///      unrelated action) correctly reads not included.
+    function _receiverIncludedInBatch(uint256[] memory ids, uint256 i, address receiver)
+        internal
+        view
+        returns (bool)
+    {
+        uint256 trigger = queue.blockTrigger(receiver);
+        if (trigger == ids[i]) return true;
+        if (trigger == 0) return false;
+        for (uint256 k = 0; k < ids.length; ++k) {
+            if (k == i || trigger != ids[k]) continue;
+            if (queue.getRequest(ids[k]).receiver == receiver) return true;
+        }
+        return false;
     }
 
     /// @dev True when request `id`'s own by-request call is the reason its
