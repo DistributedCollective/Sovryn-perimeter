@@ -87,6 +87,17 @@ contract EchidnaExitDelayQueue {
     uint256 public byRequestBlocks; // successful freeze/blacklistFromRequest calls
     uint256 public byRequestReceiverBlocks; // ...of which carried freezeReceiver
 
+    // recoveredPayouts alone only shows SOME recovery authority succeeded at
+    // least once - actors[0] (this harness) is the only party that ever
+    // calls recoverStuckExit, so it must be the recovered request's
+    // originator, owner, or receiver for that call to succeed at all. These
+    // three break that down by which role it held, so the campaign's own
+    // signal can show all three authorities were exercised independently,
+    // not just recovery succeeding via whichever one happened to fire.
+    uint256 public recoveredAsOriginator;
+    uint256 public recoveredAsOwner;
+    uint256 public recoveredAsReceiver;
+
     constructor() payable {
         actors[0] = address(this);
         actors[1] = address(0xA1);
@@ -162,11 +173,16 @@ contract EchidnaExitDelayQueue {
         IExitDelayQueue.ExitRequest memory r = queue.getRequest(id);
         if (r.status != IExitDelayQueue.ExitStatus.Queued) return;
         // Snapshot the two release gates before the call. Neither is changed by
-        // a release, so this is the state at execution time.
+        // a release, so this is the state at execution time. Pause is checked
+        // first in `_executeOne`, before anything else, so `paused` alone is
+        // an honest attempt signal; the block gate sits behind status, the
+        // unlock time and the executor check, so its counter also requires
+        // `_reachesBlockGate` - otherwise an unrelated NotUnlocked/NotExecutor
+        // revert would count as an attempt the block check never actually saw.
         bool paused = queue.securityPerimeterPaused();
         address blocked = _anyBlocked(r);
         if (paused) executedWhilePausedAttempts++;
-        if (blocked != address(0)) executedWhileBlockedAttempts++;
+        if (blocked != address(0) && _reachesBlockGate(r, paused)) executedWhileBlockedAttempts++;
         try queue.executeExit(id) {
             _onPaid(r, paused, blocked);
         } catch {}
@@ -178,7 +194,8 @@ contract EchidnaExitDelayQueue {
     ///      one-element batch runs (still the batch entry point, still the
     ///      `EmptyIds` guard's other side). Without the party check the pair
     ///      reverts as a whole and the batch path degenerates into a no-op.
-    ///      Attempt counters are per call, matching the invariant handler.
+    ///      Attempt counters are per call, matching the invariant handler, and
+    ///      gate the block counter on `_reachesBlockGate` per id (see `execute`).
     function executeMany(uint256 seedA, uint256 seedB) external {
         if (liveIds.length == 0) return;
         uint256 idA = liveIds[seedA % liveIds.length];
@@ -195,7 +212,10 @@ contract EchidnaExitDelayQueue {
         address blockedA = _anyBlocked(a);
         address blockedB = pair ? _anyBlocked(b) : address(0);
         if (paused) executedWhilePausedAttempts++;
-        if (blockedA != address(0) || blockedB != address(0)) executedWhileBlockedAttempts++;
+        if (
+            (blockedA != address(0) && _reachesBlockGate(a, paused))
+                || (blockedB != address(0) && pair && _reachesBlockGate(b, paused))
+        ) executedWhileBlockedAttempts++;
         try queue.executeExits(ids) {
             batchExecutions++;
             batchExecutedIds += ids.length;
@@ -226,6 +246,23 @@ contract EchidnaExitDelayQueue {
         if (blocked != address(0)) return blocked;
         if (queue.blockStateOf(alt) != IExitDelayQueue.BlockState.None) return alt;
         return address(0);
+    }
+
+    /// @dev True when `_executeOne` would actually reach `r`'s block-gate
+    ///      checks from this harness's own call, mirroring its own order:
+    ///      not paused, `status == Queued`, the unlock time reached, and the
+    ///      executor allowed. A call that reverts on any earlier check -
+    ///      `NotUnlocked` or `NotExecutor`, for reasons unrelated to the block
+    ///      gate, or the pause revert that runs before anything else - never
+    ///      reaches `_requireNotBlocked` at all, so `executedWhileBlockedAttempts`
+    ///      below only counts an attempt once this reads true - never one that
+    ///      failed on an earlier check while merely observing a party blocked.
+    function _reachesBlockGate(IExitDelayQueue.ExitRequest memory r, bool paused) internal view returns (bool) {
+        if (paused) return false;
+        if (r.status != IExitDelayQueue.ExitStatus.Queued) return false;
+        if (block.timestamp < r.unlockAt) return false;
+        bool party = msg.sender == r.originator || msg.sender == r.owner;
+        return party || r.owner.code.length > 0;
     }
 
     /// @dev Balance of `who` in the asset the request escrows; address(0) is
@@ -406,6 +443,14 @@ contract EchidnaExitDelayQueue {
         uint256 balBefore = _balanceOf(r.token, r.receiver);
         try queue.recoverStuckExit(id, alt) {
             recoveredPayouts++;
+            // recoverStuckExit only accepts a caller who is the originator,
+            // owner, or receiver - this harness (actors[0]) is the only
+            // caller, so whichever of the three it matches here is the role
+            // that made THIS success possible; more than one can be true at
+            // once when the request's parties collapse onto actors[0].
+            if (r.originator == address(this)) recoveredAsOriginator++;
+            if (r.owner == address(this)) recoveredAsOwner++;
+            if (r.receiver == address(this)) recoveredAsReceiver++;
             _onPaidTo(r, _recipientOf(r, alt, balBefore), paused, blocked);
         } catch {}
     }
