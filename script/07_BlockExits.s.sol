@@ -648,13 +648,18 @@ contract BlockExits is Script {
     ///      request - freeze never touches it, so only the party that was
     ///      already blocked is guaranteed to still read blocked, not both;
     ///      blacklist escalates it exactly as it does a clean request, so both
-    ///      must reach `target`. Under freeze specifically, a receiver that
-    ///      reads excluded from the batch but whose own request IS evidenced
-    ///      (`_requestEvidenced`) was clean, not held, when submitted - its
-    ///      exclusion means a later, unrelated action cleared what this call
-    ///      set, not that the call left it alone by design. That is flagged
-    ///      rather than confirmed: this function proves what current chain
-    ///      state shows, not what an intervening admin action may have undone.
+    ///      must reach `target`. A receiver that reads excluded from the
+    ///      batch but whose own request IS evidenced (`_requestEvidenced`) is
+    ///      flagged rather than silently confirmed as held - see
+    ///      `_receiverCheck` for why that reads as unambiguous drift under
+    ///      freeze (a held id's freeze call never runs, so it is never
+    ///      evidenced) but only as an unresolvable ambiguity under blacklist
+    ///      (a held id's call DOES run, just without the receiver, so it is
+    ///      evidenced exactly like a clean id's) - by-request verify refuses
+    ///      a blacklisted held id's receiver claim either way rather than
+    ///      guess; re-verify a held id's parties by address instead. This
+    ///      function proves what current chain state shows, not what an
+    ///      intervening admin action may have undone.
     function _verifyByRequest(uint256[] memory ids, IExitDelayQueue.BlockState target) internal view {
         bool mismatchFound;
         address mismatchAddr;
@@ -756,19 +761,36 @@ contract BlockExits is Script {
 
     /// @dev Split out of `_verifyByRequest` to keep its own frame inside the
     ///      stack limit. Included receivers must reach `target`; excluded
-    ///      ones must read below it UNLESS this is the freeze-specific gap a
-    ///      cleared trigger can hide: `_blockByRequest` only ever submits the
-    ///      clean group under freeze, always with the receiver included, so a
-    ///      request whose own call is evidenced (`_requestEvidenced`) was
-    ///      clean when submitted - if its receiver is not recognized as part
-    ///      of this batch either, some later, unrelated action (e.g. an
+    ///      ones must read below it UNLESS this id's own call is evidenced
+    ///      (`_requestEvidenced`), in which case this cannot be confirmed as
+    ///      a legitimate exclusion. That check applies to BOTH actions, but
+    ///      for a different reason each time.
+    ///
+    ///      Under freeze, `_blockByRequest` only ever submits the clean group,
+    ///      always with the receiver included - a held id's freeze call never
+    ///      runs at all, so it is never evidenced. An evidenced-but-excluded
+    ///      receiver there can therefore only mean one thing: this id WAS
+    ///      clean when submitted, and a later, unrelated action (e.g. an
     ///      Admin `unfreeze` on the receiver alone) cleared what this call
-    ///      set. Current chain state alone cannot then tell "genuinely held,
-    ///      never touched" apart from "was blocked, later cleared", so this
-    ///      is flagged rather than confirmed. Blacklist has no equivalent
-    ///      gap: it submits the held group too, so an evidenced-but-excluded
-    ///      held receiver there is the intended `freezeReceiver=false`
-    ///      shape, not drift - the check is scoped to `target == Frozen`.
+    ///      set. Current chain state alone cannot tell "genuinely held, never
+    ///      touched" apart from "was blocked, later cleared" in general, but
+    ///      for freeze specifically the first possibility is ruled out by
+    ///      construction, so the flag is unambiguous.
+    ///
+    ///      Under blacklist, `_blockByRequest` submits the held group too -
+    ///      escalating a held party exactly as it does a clean one - just
+    ///      without its receiver. That means a held id's own call IS
+    ///      evidenced (its originator/owner trigger names it), exactly like a
+    ///      clean id's. So an evidenced-but-excluded receiver under blacklist
+    ///      is genuinely ambiguous: it is either a clean request whose
+    ///      receiver was blocked and later cleared (the bug this guards
+    ///      against), or a held request whose receiver was correctly never
+    ///      touched (`freezeReceiver=false`, by design) - both leave the
+    ///      identical trace (receiver's trigger absent, originator/owner
+    ///      trigger naming this id). By-request verify cannot resolve that
+    ///      ambiguity from chain state and refuses rather than guess either
+    ///      way; a held id's parties must be re-verified by address
+    ///      (`BLOCK_ACTORS`), which makes no claim about the receiver at all.
     function _receiverCheck(
         uint256[] memory ids,
         uint256 i,
@@ -779,13 +801,25 @@ contract BlockExits is Script {
         if (receiverIncluded) {
             return (uint8(rState) >= uint8(target), "receiver did not reach the expected block state");
         }
-        if (target == IExitDelayQueue.BlockState.Frozen && _requestEvidenced(ids[i])) {
+        if (_requestEvidenced(ids[i])) {
+            if (target == IExitDelayQueue.BlockState.Frozen) {
+                return (
+                    false,
+                    string.concat(
+                        "receiver's own freeze call set its block, but it now reads ",
+                        _stateName(rState),
+                        " - a later action must have cleared it; this cannot be confirmed as still blocked"
+                    )
+                );
+            }
             return (
                 false,
                 string.concat(
-                    "receiver's own freeze call set its block, but it now reads ",
+                    "receiver reads ",
                     _stateName(rState),
-                    " - a later action must have cleared it; this cannot be confirmed as still blocked"
+                    " with no trigger of its own, but this id's own evidence is recorded - this cannot be told apart",
+                    " from a clean request whose receiver was blocked then cleared; re-verify this id's",
+                    " originator/owner alone with BLOCK_ACTORS, which makes no claim about the receiver"
                 )
             );
         }

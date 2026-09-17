@@ -159,6 +159,12 @@ contract BlockExitsTest is Test {
         out[0] = a;
     }
 
+    function _addrs2(address a, address b) internal pure returns (address[] memory out) {
+        out = new address[](2);
+        out[0] = a;
+        out[1] = b;
+    }
+
     function _ids(uint256 a) internal pure returns (uint256[] memory out) {
         out = new uint256[](1);
         out[0] = a;
@@ -527,9 +533,17 @@ contract BlockExitsTest is Test {
         script.dispatch("verify-freeze", _noAddrs(), _ids(id), "");
     }
 
-    /// @notice Blacklist escalates the held group too, so verify must confirm
-    ///         both groups' originator and owner reached Blacklisted, while
-    ///         only the clean group's receiver did.
+    /// @notice Blacklist escalates the held group too, so its originator and
+    ///         owner reach Blacklisted exactly like a clean request's - which
+    ///         means a held id's own by-request call IS evidenced, same as a
+    ///         clean id's. By-request verify can no longer tell "held,
+    ///         receiver correctly untouched" apart from "clean, receiver
+    ///         later cleared" from that evidence alone (see
+    ///         test_verify_blacklist_does_not_confirm_a_receiver_unblacklisted_after_the_fact),
+    ///         so it refuses a held id's receiver claim rather than guess.
+    ///         The clean group still confirms by request; the held group's
+    ///         parties - which never made a receiver claim in the first
+    ///         place - are confirmed by address instead, unambiguously.
     function test_verify_blacklist_confirms_both_groups() public {
         uint256 clean = _record(ORIG, OWNR, RCVR);
         uint256 held = _record(ORIG2, OWNR2, RCVR2);
@@ -541,12 +555,51 @@ contract BlockExitsTest is Test {
         vm.prank(ADMIN);
         queue.blacklistFromRequest(_ids(held), false, keccak256("drill"));
 
-        script.dispatch("verify-blacklist", _noAddrs(), _ids2(clean, held), "");
+        script.dispatch("verify-blacklist", _noAddrs(), _ids(clean), "");
+        script.dispatch("verify-blacklist", _addrs2(ORIG2, OWNR2), _noIds(), "");
 
         assertEq(uint256(queue.blockStateOf(RCVR)), uint256(IExitDelayQueue.BlockState.Blacklisted));
         assertEq(uint256(queue.blockStateOf(RCVR2)), uint256(IExitDelayQueue.BlockState.None));
         assertEq(uint256(queue.blockStateOf(ORIG2)), uint256(IExitDelayQueue.BlockState.Blacklisted));
         assertEq(uint256(queue.blockStateOf(OWNR2)), uint256(IExitDelayQueue.BlockState.Blacklisted));
+    }
+
+    /// @notice The identical shape to
+    ///         test_verify_freeze_does_not_confirm_a_receiver_unfrozen_after_the_fact,
+    ///         but on the blacklist path for the clean group specifically: a
+    ///         clean request's blacklist call succeeds and blocks its
+    ///         receiver alongside it, then, before the responder runs
+    ///         verify, the Admin separately unblacklists the receiver alone.
+    ///         Before this fix, `_receiverCheck`'s guard was scoped to
+    ///         `target == Frozen` only, reasoning that blacklist's held group
+    ///         already has a legitimate excluded-receiver shape - which is
+    ///         true, but does not make a CLEAN id's excluded receiver safe to
+    ///         wave through too: the old code fell through to the held-group
+    ///         default (`rState < target`), which trivially passed, and
+    ///         printed a false CONFIRMED for a receiver that used to be
+    ///         blocked and no longer is.
+    function test_verify_blacklist_does_not_confirm_a_receiver_unblacklisted_after_the_fact() public {
+        uint256 clean = _record(ORIG, OWNR, RCVR);
+
+        vm.prank(ADMIN);
+        queue.blacklistFromRequest(_ids(clean), true, keccak256("drill"));
+
+        vm.prank(ADMIN);
+        queue.unblacklist(RCVR);
+
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "NOT CONFIRMED: ",
+                    vm.toString(RCVR),
+                    " - receiver reads None with no trigger of its own, but this id's own evidence is recorded",
+                    " - this cannot be told apart from a clean request whose receiver was blocked then cleared;",
+                    " re-verify this id's originator/owner alone with BLOCK_ACTORS, which makes no claim about",
+                    " the receiver - the call did not take effect"
+                )
+            )
+        );
+        script.dispatch("verify-blacklist", _noAddrs(), _ids(clean), "");
     }
 
     /// @notice Two clean requests routed to the same receiver - the shape a set
