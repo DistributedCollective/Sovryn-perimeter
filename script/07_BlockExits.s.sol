@@ -633,8 +633,9 @@ contract BlockExits is Script {
     ///      say which group a request was in. `_receiverIncludedInBatch` reads
     ///      the group instead: a receiver counts as included when its recorded
     ///      trigger names ANY id in this same batch that also resolves to that
-    ///      receiver, not only `ids[i]` itself - the trigger keeps only the
-    ///      last id that wrote it, so two ids sharing a receiver in the same
+    ///      address in ANY role - receiver, originator, or owner - not only
+    ///      `ids[i]`'s own receiver field. The trigger keeps only the
+    ///      last id that wrote it, so two ids sharing an address in the same
     ///      clean-group call would otherwise leave the earlier one unmatched
     ///      even though its receiver was blocked alongside it. This reads true
     ///      only for the clean group, under either action - a receiver an
@@ -750,14 +751,17 @@ contract BlockExits is Script {
 
     /// @dev True when `receiver`'s recorded trigger names this batch's own
     ///      handling of it: `ids[i]` itself, or another id in `ids` that also
-    ///      resolves to `receiver`. `_blockTrigger` keeps only the last id that
-    ///      wrote it, so checking `ids[i]` alone misreads every id but the last
-    ///      one when several ids in the same batch share a receiver - the
-    ///      shape a set of malicious withdrawals routed to one payout address
-    ///      produces. Checking the whole batch instead is still specific to
-    ///      it: a trigger of 0 (never blocked, or blocked by a flat lever that
-    ///      carries no id) or one naming an id outside `ids` (an earlier,
-    ///      unrelated action) correctly reads not included.
+    ///      resolves to `receiver` IN ANY ROLE - its own receiver, its
+    ///      originator, or its owner. `_blockTrigger` keeps only the last id
+    ///      that wrote it, so checking `ids[i]` alone misreads every id but
+    ///      the last one when several ids in the same batch touch the same
+    ///      address - the shape several malicious withdrawals from one wallet
+    ///      produce, whether they share a payout address or one pays out to
+    ///      an address the same wallet also used to originate a different
+    ///      withdrawal. Checking every role on the whole batch instead is
+    ///      still specific to it: a trigger of 0 (never blocked, or blocked by
+    ///      a flat lever that carries no id) or one naming an id outside `ids`
+    ///      (an earlier, unrelated action) correctly reads not included.
     function _receiverIncludedInBatch(uint256[] memory ids, uint256 i, address receiver)
         internal
         view
@@ -768,7 +772,8 @@ contract BlockExits is Script {
         if (trigger == 0) return false;
         for (uint256 k = 0; k < ids.length; ++k) {
             if (k == i || trigger != ids[k]) continue;
-            if (queue.getRequest(ids[k]).receiver == receiver) return true;
+            IExitDelayQueue.ExitRequest memory rk = queue.getRequest(ids[k]);
+            if (rk.receiver == receiver || rk.originator == receiver || rk.owner == receiver) return true;
         }
         return false;
     }

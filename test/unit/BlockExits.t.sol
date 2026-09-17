@@ -552,6 +552,42 @@ contract BlockExitsTest is Test {
         assertEq(uint256(queue.blockStateOf(RCVR)), uint256(IExitDelayQueue.BlockState.Blacklisted));
     }
 
+    /// @notice A shared address does not have to reach the other request
+    ///         through the same field - here RCVR is A's receiver AND B's
+    ///         originator, the shape several malicious withdrawals from one
+    ///         wallet produce when one of them pays out to an address the
+    ///         same wallet also used to originate a different withdrawal.
+    ///         Both requests are clean, so both parties resolve to RCVR
+    ///         through different roles; `_blockTrigger` still keeps only the
+    ///         id that wrote it last (B's), so verify must recognize A's
+    ///         receiver as explained by B's originator role, not only a
+    ///         same-field receiver match.
+    function test_verify_freeze_confirms_a_receiver_shared_with_another_requests_originator() public {
+        uint256 a = _record(ORIG, OWNR, RCVR);
+        uint256 b = _record(RCVR, OWNR2, RCVR2);
+
+        vm.prank(ADMIN);
+        queue.freezeFromRequest(_ids2(a, b), true, keccak256("drill"));
+
+        script.dispatch("verify-freeze", _noAddrs(), _ids2(a, b), "");
+
+        assertEq(uint256(queue.blockStateOf(RCVR)), uint256(IExitDelayQueue.BlockState.Frozen));
+    }
+
+    /// @notice Same shape, but the address A's receiver shares is B's OWNER
+    ///         rather than its originator.
+    function test_verify_freeze_confirms_a_receiver_shared_with_another_requests_owner() public {
+        uint256 a = _record(ORIG, OWNR, RCVR);
+        uint256 b = _record(ORIG2, RCVR, RCVR2);
+
+        vm.prank(ADMIN);
+        queue.freezeFromRequest(_ids2(a, b), true, keccak256("drill"));
+
+        script.dispatch("verify-freeze", _noAddrs(), _ids2(a, b), "");
+
+        assertEq(uint256(queue.blockStateOf(RCVR)), uint256(IExitDelayQueue.BlockState.Frozen));
+    }
+
     /// @notice The held group's receiver must read below `target` to confirm -
     ///         it is not enough for it to merely differ from the id under
     ///         test. Here the receiver is already blocked for an unrelated
