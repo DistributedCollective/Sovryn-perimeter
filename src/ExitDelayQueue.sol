@@ -1,0 +1,1217 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.20;
+
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+
+import {IExitDelayQueue} from "./interfaces/IExitDelayQueue.sol";
+
+/// @notice Minimal WRBTC (wrapped-RBTC) surface. `unwrapOnDelivery` requests
+///         hold WRBTC and unwrap to native RBTC at `executeExit`.
+interface IWRBTC {
+    function withdraw(uint256 amount) external;
+}
+
+/// @title  ExitDelayQueue
+/// @notice Per-request escrow for the *user* leg of an exit. Each exit becomes
+///         an immutable request with its own monotonic id; execution targets
+///         explicit ids (no cursor, no ordering assumption). During the delay,
+///         a detected theft can be Frozen/Blacklisted and disposed via the
+///         three recovery legs. UUPS-upgradeable, mirroring the
+///         `ExitFeeVault` skeleton.
+///
+///         Authoritative build spec:
+///         The invariants are enumerated with the properties below and
+///         pinned by the forge invariant suite.
+///
+///         Two-principal authority: `Owner` (Ownable2Step) holds UUPS
+///         upgrade + all security-critical CONFIG; `Admin` (a single stored
+///         address, `onlyAdminOrOwner`) is the fast guardian — freeze/blacklist,
+///         pause, Leg-1 release, Leg-2 along Owner-approved routes. The two roles
+///         MAY be the same address; the authority split constrains the Admin only
+///         once ownership moves to a separate holder.
+//
+// The queue custodies escrowed RBTC/ERC20/WRBTC by design; the only value-in
+// path is the gated ingress (record*/receive()), and value-out is CEI-ordered
+// behind nonReentrant. aderyn's "contract-locks-ether" is intentional here.
+// aderyn-ignore-next-line(contract-locks-ether)
+contract ExitDelayQueue is
+    IExitDelayQueue,
+    Initializable,
+    UUPSUpgradeable,
+    Ownable2StepUpgradeable,
+    ReentrancyGuardUpgradeable
+{
+    using SafeERC20 for IERC20;
+    using EnumerableSet for EnumerableSet.UintSet;
+    using EnumerableSet for EnumerableSet.AddressSet;
+    using EnumerableSet for EnumerableSet.Bytes32Set;
+
+    // ─── Storage layout ──────────────────────────────────────────
+    // Verified via `forge inspect ExitDelayQueue storageLayout`. Inherited-OZ
+    // namespaces occupy proxy slots 0..300 (Initializable/Context/Ownable/
+    // Ownable2Step/ReentrancyGuard, each with a 50-slot __gap; UUPS/Context add
+    // no fields). This contract's own slot 0 sits at proxy slot 301:
+    //
+    //   301  admin (address; the Admin guardian — 1 slot, no OZ AccessControl)
+    //   302  lastRequestId (uint256)
+    //   303  _requests (mapping head)
+    //   304  _activeByParty (mapping head)
+    //   305  _recoveryRoutes (mapping head)
+    //   306  _recoveryRouteIds._values (Bytes32Set array head)   ┐ 2 slots
+    //   307  _recoveryRouteIds._indexes (mapping head)           ┘
+    //   308  _topUpFeasible (mapping head)
+    //   309  _blockState (mapping head)
+    //   310  _blockedAccounts._values (AddressSet array head)    ┐ 2 slots
+    //   311  _blockedAccounts._indexes (mapping head)            ┘
+    //   312  _blockTrigger (mapping head)
+    //   313  _allowedSource (mapping head)
+    //   314  _allowedSources._values (AddressSet array head)     ┐ 2 slots
+    //   315  _allowedSources._indexes (mapping head)             ┘
+    //   316  _totalEscrowed (mapping head)
+    //   317  nativePusher (address)         ┐ address(20) + uint32(4) + bool(1)
+    //        minimumDelaySeconds (uint32)   │ = 25 bytes → PACKED into one slot
+    //        securityPerimeterPaused (bool) ┘
+    //   318  wrbtc (address; canonical WRBTC — own slot)
+    //   319 .. 350  __gap[32]  (50 − 18 own slots)
+    //
+    // own_slots = 18 (admin, lastRequestId, 8 mapping heads, 3 EnumerableSet ×2,
+    // the packed nativePusher+minimumDelaySeconds+securityPerimeterPaused slot,
+    // and wrbtc). __gap = 50 − 18 = 32. Re-derive at build time with
+    // `forge inspect ExitDelayQueue storageLayout` before any deployment and
+    // set __gap accordingly. Upgrades adding storage MUST consume from __gap.
+    //
+    // A bouncing honest recipient is handled self-service by the
+    // {originator, owner, receiver} set via the dedicated
+    // recoverStuckExit(id, altReceiver) leg — which attempts the STORED
+    // receiver FIRST and pays altReceiver only on a genuine bounce (verify-by-
+    // attempting; a healthy exit is NEVER redirected). There is no stored
+    // failure flag, no Admin/Owner recovery path, and no request re-targeting.
+    // The all-four-actor block gate covers the STORED receiver so a blocked
+    // original receiver refuses recovery and falls to Leg-3.
+
+    /// @notice Fast operational guardian. Not an OZ AccessControl role —
+    ///         a single stored address checked by `onlyAdminOrOwner`. MAY equal
+    ///         the Owner; the authority bounds between the two roles bind only
+    ///         once ownership moves to a separate holder.
+    address public admin;
+
+    /// @notice Monotonic id source; ids are never reused. The first
+    ///         recorded id is 1 (0 is reserved as "no request" / arbitrary block).
+    uint256 public lastRequestId;
+
+    mapping(uint256 => ExitRequest) internal _requests;
+
+    /// @dev Recorded party (originator, owner) → status==Queued request ids.
+    ///      A freeze HOLDS but does not remove (Frozen is an address state, not
+    ///      a request status). Dual-key when originator != owner. No
+    ///      on-chain path iterates the full set — only O(1) add/remove and the
+    ///      paginated `getActive` view touch it.
+    mapping(address => EnumerableSet.UintSet) internal _activeByParty;
+
+    mapping(bytes32 => RecoveryRoute) internal _recoveryRoutes;
+    EnumerableSet.Bytes32Set internal _recoveryRouteIds;
+
+    /// @dev surfaceId → may a topUpPool=true route be registered? Owner-set;
+    ///      true only for lending-lender/borrower surfaces at launch.
+    mapping(bytes32 => bool) internal _topUpFeasible;
+
+    /// @dev Execution & recovery treat Frozen and Blacklisted alike as "blocked";
+    ///      recovery-away distinguishes them.
+    mapping(address => BlockState) internal _blockState;
+    EnumerableSet.AddressSet internal _blockedAccounts; // Frozen ∪ Blacklisted, for getters
+
+    /// @dev addr → exit-request id that triggered the block (0 = arbitrary block).
+    mapping(address => uint256) internal _blockTrigger;
+
+    mapping(address => bool) internal _allowedSource;
+    EnumerableSet.AddressSet internal _allowedSources;
+
+    /// @dev token => Σ amounts of Queued requests (solvency).
+    ///      address(0) = native RBTC. Exposed via the `totalEscrowed(address)`
+    ///      view (not a public auto-getter so the interface signature is exact).
+    mapping(address => uint256) internal _totalEscrowed;
+
+    /// @notice The single registered native pusher (Zero `ActivePool`), Owner-set.
+    ///         NOTE: `receive()` is now UNCONDITIONAL and no longer reads
+    ///         this slot — the pusher is no longer a `receive()`-time gate. The
+    ///         field + setter are RETAINED (unchanged ABI/packing, so `__gap`
+    ///         stays 32) as documented provenance of the intended native source;
+    ///         `_allowedSource` still gates the record CALLER at ingress.
+    address public nativePusher;
+
+    /// @notice F1 floor enforced PER-REQUEST at ingress. Packs with
+    ///         nativePusher + securityPerimeterPaused.
+    uint32 public minimumDelaySeconds;
+
+    /// @notice While true, the queue pays nobody through the user-facing legs:
+    ///         `executeExit`, `executeExits` and `recoverStuckExit` revert
+    ///         `QueuePaused` for every caller — originator, owner, and anyone
+    ///         delivering a contract-owned request. Users therefore have no path
+    ///         of their own while it holds.
+    ///         What stays live: ingress (the four `record*` functions and
+    ///         `receive`), so withdrawals keep escrowing; the block levers; the
+    ///         Admin-or-Owner `resolveToProtocol`, which still needs a
+    ///         blacklisted originator or owner and a matching active route; and
+    ///         the Owner's `resolveByOwner`, which reaches only requests with a
+    ///         blacklisted party, paused or not. Owner configuration and
+    ///         `sweepSurplus` are unaffected.
+    ///         Packs with nativePusher (address) + minimumDelaySeconds (uint32).
+    bool public securityPerimeterPaused;
+
+    /// @notice Canonical WRBTC address. Set at initialize; used only to
+    ///         guard the `unwrapOnDelivery` flag and to unwrap at delivery. A
+    ///         full own slot (slot 318 in the layout note above), so __gap is
+    ///         50 − 18 = 32. Re-derive via `forge inspect` before deployment.
+    address public wrbtc;
+
+    // aderyn-ignore-next-line(unused-state-variable)
+    uint256[32] private __gap;
+
+    /// @notice Max page size for the paginated `getActive` / `blockedAccounts`
+    ///         views. Public so paging is
+    ///         self-describing on-chain — a caller can read the cap instead of
+    ///         hard-coding 500 and discovering the clamp empirically.
+    uint256 public constant MAX_GET_ACTIVE_PAGE = 500;
+
+    // ─── Modifiers ──────────────────────────────────────────────────────
+
+    modifier onlyAdminOrOwner() {
+        if (msg.sender != admin && msg.sender != owner()) revert NotAdminOrOwner(msg.sender);
+        _;
+    }
+
+    modifier onlyAllowedSource() {
+        if (!_allowedSource[msg.sender]) revert UnregisteredSource(msg.sender);
+        _;
+    }
+
+
+    // ─── Construction / initialization ──────────────────────────────────
+
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the proxy. Deployer becomes the initial Owner; the
+    ///         bootstrap flow then `transferOwnership` → the Owner.
+    /// @param owner_ Owner principal (0 or msg.sender ⇒ deployer stays owner).
+    /// @param admin_ Fast guardian; non-zero. MAY equal the owner (
+    ///        deliberate: launch shape is admin = owner, both held by one
+    ///        Safe; the split becomes a real authority bound only when
+    ///        ownership later moves to Bitocracy).
+    /// @param wrbtc_ Canonical WRBTC token. Must be non-zero.
+    /// @param minimumDelaySeconds_ Per-request delay floor.
+    /// @param initialAllowedSources Hooked source contracts.
+    function initialize(
+        address owner_,
+        address admin_,
+        address wrbtc_,
+        uint32 minimumDelaySeconds_,
+        address[] calldata initialAllowedSources
+    ) external initializer {
+        __Ownable_init();
+        __Ownable2Step_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
+
+        if (wrbtc_ == address(0) || admin_ == address(0)) revert ZeroAddress();
+        wrbtc = wrbtc_;
+
+        admin = admin_;
+
+        minimumDelaySeconds = minimumDelaySeconds_;
+
+        for (uint256 i = 0; i < initialAllowedSources.length; ++i) {
+            address src = initialAllowedSources[i];
+            if (src == address(0)) revert ZeroAddress();
+            if (_allowedSources.add(src)) {
+                _allowedSource[src] = true;
+                emit AllowedSourceSet(src, true);
+            }
+        }
+
+        if (owner_ != address(0) && owner_ != msg.sender) {
+            _transferOwnership(owner_);
+        }
+    }
+
+    // ─── Ingress ──────────────────────────────────────────
+
+    /// @inheritdoc IExitDelayQueue
+    function recordERC20Exit(
+        address token,
+        uint128 amount,
+        uint32 delaySeconds,
+        bytes32 surfaceId,
+        address subProduct,
+        address effOrig,
+        address effOwner,
+        address receiver,
+        bool unwrapOnDelivery
+    ) external nonReentrant onlyAllowedSource returns (uint256 id) {
+        //  guard: the delivery-time unwrap can only be set on WRBTC escrow.
+        if (unwrapOnDelivery && token != wrbtc) revert UnwrapNonWrbtc();
+        _validateIngress(token, amount, delaySeconds, effOrig, effOwner, receiver, unwrapOnDelivery);
+
+        // ERC20 pull with receipt proof: measure before/after so a
+        // fee-on-transfer/rebasing token cannot silently mis-escrow.
+        uint256 before = IERC20(token).balanceOf(address(this));
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = IERC20(token).balanceOf(address(this)) - before;
+        if (received != amount) revert ReceivedAmountMismatch(token, received, amount);
+
+        id = _record(
+            token, amount, delaySeconds, surfaceId, subProduct, effOrig, effOwner, receiver, unwrapOnDelivery
+        );
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Measured-delta path (0.5.x): the source pushes `amount` and records
+    ///      in the SAME outer tx. We measure the current non-backing surplus
+    ///      `delta = balanceOf − totalEscrowed` and require `delta >= amount`:
+    ///      the record CONSUMES exactly `amount` into
+    ///      totalEscrowed; any excess (pre-existing dust, a force-sent/donated
+    ///      1-wei, another source's surplus) stays as non-backing surplus for
+    ///      sweepSurplus and is NEVER mis-credited. Because push and record are
+    ///      atomic in one outer tx, there is no interleaved-push residual to
+    ///      protect against, and a donation only RAISES the surplus, so
+    ///      `>= amount` still passes.
+    function recordReceivedERC20Exit(
+        address token,
+        uint128 amount,
+        uint32 delaySeconds,
+        bytes32 surfaceId,
+        address subProduct,
+        address effOrig,
+        address effOwner,
+        address receiver
+    ) external nonReentrant onlyAllowedSource returns (uint256 id) {
+        _validateIngress(token, amount, delaySeconds, effOrig, effOwner, receiver, false);
+
+        // Non-backing surplus = (current backing balance) − (already-escrowed).
+        // Require it covers `amount` (delta >= amount). Revert only when
+        // the push under-delivered (delta < amount ⇒ ReceivedAmountMismatch).
+        // Excess over `amount` is left as sweepable surplus (never mis-credited).
+        uint256 backing = IERC20(token).balanceOf(address(this));
+        uint256 escrowed = _totalEscrowed[token];
+        uint256 delta = backing > escrowed ? backing - escrowed : 0;
+        if (delta < amount) revert ReceivedAmountMismatch(token, delta, amount);
+
+        id = _record(token, amount, delaySeconds, surfaceId, subProduct, effOrig, effOwner, receiver, false);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function recordNativeExit(
+        uint128 amount,
+        uint32 delaySeconds,
+        bytes32 surfaceId,
+        address subProduct,
+        address effOrig,
+        address effOwner,
+        address receiver
+    ) external payable nonReentrant onlyAllowedSource returns (uint256 id) {
+        if (msg.value != amount) revert AmountMismatch(msg.value, amount);
+        _validateIngress(address(0), amount, delaySeconds, effOrig, effOwner, receiver, false);
+        id = _record(
+            address(0), amount, delaySeconds, surfaceId, subProduct, effOrig, effOwner, receiver, false
+        );
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Native measured-receipt (Zero): `ActivePool.sendETH(queue, amount)`
+    ///      pushes value (via `receive()`) BEFORE this record in the same outer
+    ///      tx; a record revert rolls the push back (fail-closed). Same
+    ///       rule as the ERC20 measured path: require the non-backing
+    ///      surplus `delta >= amount` and credit exactly `amount`. The
+    ///      `receive()` gate cannot stop a `selfdestruct` force-send, which is
+    ///      exactly why crediting must tolerate surplus (`>= amount`) rather than
+    ///      require an exact balance — a force-sent 1-wei must not
+    ///      permanently brick every subsequent Zero exit record.
+    function recordReceivedNativeExit(
+        uint128 amount,
+        uint32 delaySeconds,
+        bytes32 surfaceId,
+        address subProduct,
+        address effOrig,
+        address effOwner,
+        address receiver
+    ) external nonReentrant onlyAllowedSource returns (uint256 id) {
+        _validateIngress(address(0), amount, delaySeconds, effOrig, effOwner, receiver, false);
+        uint256 backing = address(this).balance;
+        uint256 escrowed = _totalEscrowed[address(0)];
+        uint256 delta = backing > escrowed ? backing - escrowed : 0;
+        if (delta < amount) revert ReceivedAmountMismatch(address(0), delta, amount);
+        id = _record(
+            address(0), amount, delaySeconds, surfaceId, subProduct, effOrig, effOwner, receiver, false
+        );
+    }
+
+    /// @notice UNCONDITIONAL native-RBTC sink. Accepts
+    ///         native from ANYONE with **no storage reads and no sender gate**.
+    ///
+    ///         Why unconditional: the real Rootstock WRBTC `withdraw()` returns
+    ///         native via a 2300-gas `transfer` stipend. Any storage-slot sender
+    ///         check here (SLOAD ≥ 2100 cold under EIP-2929/Paris) exceeds that
+    ///         stipend, so a sender-gated `receive()` would `OutOfGas`-brick every
+    ///         `unwrapOnDelivery` (native `burnToBTC`) payout after unlock —
+    ///         pinned by `ExitDelayQueueUnwrapStipend`. Accepting unconditionally
+    ///         is safe because the measured-receipt ingress paths already
+    ///         neutralize stray or donated native: they credit EXACTLY `amount`
+    ///         when the non-backing surplus is `>= amount` and never mis-credit,
+    ///         so unsolicited RBTC — including a `selfdestruct` force-send, which
+    ///         no sender gate could stop either — only accrues as
+    ///         `sweepSurplus`-able surplus. The queue does not need to assert
+    ///         "only ActivePool pays in native": the measured-receipt credit is
+    ///         defense enough against stray native on its own.
+    receive() external payable virtual {}
+
+    // ─── Ingress helpers ────────────────────────────────────────────────
+
+    function _validateIngress(
+        address token,
+        uint128 amount,
+        uint32 delaySeconds,
+        address effOrig,
+        address effOwner,
+        address receiver,
+        bool unwrapOnDelivery
+    ) internal view {
+        if (amount == 0) revert ZeroAmount();
+        // AmountTooLarge: the record* ABI takes `amount` as uint128
+        // deliberately (keeps ExitRequest word-1 packing). The uint256→
+        // uint128 narrowing therefore happens in the CALLER (the Perimeter hook /
+        // 0.5.x product host), which MUST `require(userAmount <= type(uint128).max)
+        // else AmountTooLarge` BEFORE narrowing — that check is the live
+        // queue-boundary guard, in the caller's pragma, against silent truncation
+        // (IExitDelayQueue NatSpec). The queue re-asserting it on an already-
+        // uint128 arg would be a compile-time tautology, so the guard is kept at
+        // the boundary where a uint256 actually exists, not duplicated as dead code
+        // here. We still reject a below-floor delay and zero-address parties.
+        if (delaySeconds < minimumDelaySeconds) revert DelayBelowFloor(delaySeconds, minimumDelaySeconds);
+        if (effOrig == address(0) || effOwner == address(0) || receiver == address(0)) revert ZeroAddress();
+        // A receiver delivery cannot actually pay. Paying this queue sends the
+        // money straight back in; WRBTC credits native RBTC to its sender - this
+        // queue - as wrapped tokens. Either way delivery would mark the request
+        // Executed while the money stayed here as surplus. WRBTC paid as a token,
+        // without unwrapping, sends no native RBTC and is not refused.
+        if (receiver == address(this)) revert InvalidReceiver(receiver);
+        if (receiver == wrbtc && (token == address(0) || unwrapOnDelivery)) revert InvalidReceiver(receiver);
+    }
+
+    function _record(
+        address token,
+        uint128 amount,
+        uint32 delaySeconds,
+        bytes32 surfaceId,
+        address subProduct,
+        address effOrig,
+        address effOwner,
+        address receiver,
+        bool unwrapOnDelivery
+    ) internal returns (uint256 id) {
+        id = ++lastRequestId;
+
+        // Write field-by-field into storage to keep the stack shallow (a struct
+        // literal with 11 members + the 9-arg event blows the 0.8.20 stack
+        // without via-ir; this repo pins non-via-ir to match the deployed
+        // Perimeter bytecode profile).
+        ExitRequest storage r = _requests[id];
+        r.amount = amount;
+        r.createdAt = uint64(block.timestamp);
+        r.unlockAt = uint64(block.timestamp + delaySeconds);
+        r.originator = effOrig;
+        r.owner = effOwner;
+        r.receiver = receiver;
+        r.token = token;
+        r.surfaceId = surfaceId;
+        r.subProduct = subProduct;
+        r.status = ExitStatus.Queued;
+        r.unwrapOnDelivery = unwrapOnDelivery;
+
+        // Dual-key insert; EnumerableSet dedups when originator == owner.
+        _activeByParty[effOrig].add(id);
+        _activeByParty[effOwner].add(id);
+
+        _totalEscrowed[token] += amount;
+
+        emit ExitQueued(id, effOrig, effOwner, receiver, token, amount, r.unlockAt, surfaceId, subProduct);
+    }
+
+    // ─── Execution ───────────────────────────────────────────────
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Pays the request's immutable `receiver`. A reverting receiver rolls
+    ///      the whole call back (fail-closed) — the request stays Queued and
+    ///      the rightful parties retry via `executeExit` (once the recipient is
+    ///      fixed) or `recoverStuckExit` (redirect leg). No redirect here.
+    function executeExit(uint256 requestId) external nonReentrant {
+        _executeOne(requestId);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Strict array order; atomic (any revert rolls the whole batch back).
+    ///      A duplicate id flips to Executed on the first pass, then
+    ///      hits AlreadyTerminal on the second — never double-pays. Always pays
+    ///      the immutable receiver (no redirect in the batch path).
+    function executeExits(uint256[] calldata ids) external nonReentrant {
+        if (ids.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < ids.length; ++i) {
+            _executeOne(ids[i]);
+        }
+    }
+
+    /// @dev Shared execution core — always pays the immutable `receiver`.
+    ///      Who may deliver: the originator or the owner; and, when the owner
+    ///      is a contract, anyone — a contract owner cannot press the button
+    ///      itself, and delivery goes only to the receiver fixed at escrow
+    ///      time, so widening the executor set adds no destination. Block gate
+    ///      covers the executor and `{originator, owner, receiver}`. CEI:
+    ///      terminal status + escrow decrement + set removal ALL before the
+    ///      external transfer (`nonReentrant`).
+    function _executeOne(uint256 requestId) internal {
+        if (securityPerimeterPaused) revert QueuePaused();
+        ExitRequest storage r = _requests[requestId];
+        if (r.status == ExitStatus.None) revert UnknownRequest(requestId);
+        if (r.status != ExitStatus.Queued) revert AlreadyTerminal(requestId);
+        if (block.timestamp < r.unlockAt) revert NotUnlocked(requestId, r.unlockAt);
+        bool party = msg.sender == r.originator || msg.sender == r.owner;
+        if (!party && r.owner.code.length == 0) revert NotExecutor(msg.sender);
+
+        _requireNotBlocked(r.originator);
+        _requireNotBlocked(r.owner);
+        _requireNotBlocked(r.receiver);
+        // The executor last: for a party this repeats a check above; for
+        // anyone else it is the only one that names them.
+        if (!party) _requireNotBlocked(msg.sender);
+
+        address token = r.token;
+        uint128 amount = r.amount;
+        address receiver = r.receiver;
+        bool unwrap = r.unwrapOnDelivery;
+
+        r.status = ExitStatus.Executed;
+        _removeActive(requestId, r.originator, r.owner);
+        _totalEscrowed[token] -= amount;
+
+        emit ExitExecuted(requestId, receiver, token, amount);
+        _payout(token, receiver, amount, unwrap);
+        _requireSolventAfterPayout(token, unwrap);
+    }
+
+    // ─── Stuck-exit recovery — verify-by-attempting redirect leg ──
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev A bouncing honest recipient is not a perimeter-specific problem (the
+    ///      same withdrawal would bounce without the delay), so recovery is
+    ///      SELF-SERVICE by the `{originator, owner, receiver}` set — no
+    ///      Admin/Owner path, no stored failure flag, and the stored request is
+    ///      NEVER re-targeted (`altReceiver` is a payout-time destination only).
+    ///
+    ///      VERIFY-BY-ATTEMPTING: after CEI (status → Executed, escrow decremented,
+    ///      sets pruned), the STORED-receiver payout is attempted FIRST. If it
+    ///      SUCCEEDS, that is the payout and `altReceiver` is unused — a HEALTHY
+    ///      exit is NEVER redirected. Only if the stored-receiver payout genuinely
+    ///      REVERTS do we pay `altReceiver`; if `altReceiver` also fails, the whole
+    ///      call reverts and the funds stay Queued (CEI rollback).
+    ///
+    ///      ALL-FOUR-ACTOR block gate: none of `{originator, owner, STORED
+    ///      receiver, altReceiver}` may be Frozen/Blacklisted. Gating the STORED
+    ///      receiver means a blocked/hacked original receiver refuses recovery
+    ///      entirely (this leg can never move its funds) and falls to Leg-3
+    ///      instead of reaching a receiver-only dead end. `altReceiver` is
+    ///      guarded: not 0/this/token/wrbtc.
+    function recoverStuckExit(uint256 id, address altReceiver) external nonReentrant {
+        if (securityPerimeterPaused) revert QueuePaused();
+        ExitRequest storage r = _requests[id];
+        if (r.status == ExitStatus.None) revert UnknownRequest(id);
+        if (r.status != ExitStatus.Queued) revert AlreadyTerminal(id);
+        if (block.timestamp < r.unlockAt) revert NotUnlocked(id, r.unlockAt);
+        address token = r.token;
+        address receiver = r.receiver;
+        // The three parties to the request may recover it; a receiver that
+        // cannot accept the payout but can act may point it elsewhere itself.
+        if (msg.sender != r.originator && msg.sender != r.owner && msg.sender != receiver) {
+            revert NotExecutor(msg.sender);
+        }
+
+        // altReceiver guard: a payout-time destination, never the zero
+        // address, this contract (would trap escrow), the escrowed token, or WRBTC
+        // (a wrapped-token destination would silently swallow an unwrap payout).
+        if (
+            altReceiver == address(0) || altReceiver == address(this) || altReceiver == token
+                || altReceiver == wrbtc
+        ) revert InvalidAltReceiver(altReceiver);
+
+        // All-four-actor block gate: originator, owner, the STORED receiver,
+        // and altReceiver must all be unblocked. Gating the STORED receiver means a
+        // blocked/hacked original receiver refuses recovery here (→ Leg-3).
+        _requireNotBlocked(r.originator);
+        _requireNotBlocked(r.owner);
+        _requireNotBlocked(receiver);
+        _requireNotBlocked(altReceiver);
+
+        // CEI: terminal status + escrow decrement + set removal BEFORE
+        // any external transfer, so a failed attempt or reentry cannot double-spend.
+        uint128 amount = r.amount;
+        bool unwrap = r.unwrapOnDelivery;
+
+        r.status = ExitStatus.Executed;
+        _removeActive(id, r.originator, r.owner);
+        _totalEscrowed[token] -= amount;
+
+        // Attempt the STORED-receiver payout first (a healthy exit pays here and
+        // altReceiver is never used, even when altReceiver == receiver). Only on a
+        // GENUINE bounce do we fall through to altReceiver — tracked by an explicit
+        // bool, NOT an address compare, so a request whose stored receiver equals
+        // altReceiver is paid exactly ONCE.
+        address paid;
+        if (_tryPayout(token, receiver, amount, unwrap)) {
+            paid = receiver;
+        } else {
+            // Original bounced — pay altReceiver; if THIS also fails, the whole call
+            // reverts (CEI rollback leaves the request Queued).
+            _payout(token, altReceiver, amount, unwrap);
+            paid = altReceiver;
+        }
+        // Outside the try/catch above on purpose: a solvency failure must end
+        // the call, not be mistaken for the stored receiver bouncing.
+        _requireSolventAfterPayout(token, unwrap);
+        emit ExitExecuted(id, paid, token, amount);
+    }
+
+    /// @dev Catchable single-payout attempt for `recoverStuckExit`. Routes the
+    ///      transfer through an EXTERNAL self-call so a reverting recipient is
+    ///      caught (Solidity cannot catch a low-level revert inline) and the leg
+    ///      can fall through to `altReceiver`. Returns false on a bounce.
+    ///      Self-only (`msg.sender == address(this)`); NOT `nonReentrant` — it runs
+    ///      inside `recoverStuckExit`'s guard, and CEI already made the state safe.
+    ///
+    ///      The attempt is given the gas the transaction carries: the caller's
+    ///      gas limit is the budget, and a receiver that needs more is retried
+    ///      with more. The EVM forwards at most 63/64 of what remains, so a
+    ///      receiver that consumes everything it is given still leaves the
+    ///      1/64 that pays `altReceiver`, provided the caller supplied enough
+    ///      for both; a caller who did not sees the whole call revert.
+    function _tryPayout(address token, address to, uint128 amount, bool unwrap) internal returns (bool) {
+        try this.payoutExternal(token, to, amount, unwrap) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /// @notice Internal payout trampoline — only callable by the contract itself
+    ///         (via `_tryPayout`). Reverts on a bouncing recipient so the caller's
+    ///         try/catch can fall through. Not part of the external ABI surface for
+    ///         any other caller (the `SelfOnly` guard makes a direct call revert).
+    function payoutExternal(address token, address to, uint128 amount, bool unwrap) external {
+        if (msg.sender != address(this)) revert SelfOnly();
+        _payout(token, to, amount, unwrap);
+    }
+
+    // ─── Block model ──────────────────────────────────────
+
+    /// @inheritdoc IExitDelayQueue
+    function freezeFromRequest(uint256 requestId, bool freezeReceiver, bytes32 reasonHash)
+        external
+        onlyAdminOrOwner
+    {
+        _blockFromRequest(requestId, freezeReceiver, reasonHash, BlockState.Frozen);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function blacklistFromRequest(uint256 requestId, bool freezeReceiver, bytes32 reasonHash)
+        external
+        onlyAdminOrOwner
+    {
+        _blockFromRequest(requestId, freezeReceiver, reasonHash, BlockState.Blacklisted);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Batch by-request-id. Resolves each
+    ///      request's `{originator, owner}` (+ `receiver` if `freezeReceiver`) and
+    ///      blocks all in ONE tx. Whole-batch ATOMIC: one unknown id reverts the
+    ///      whole batch (like `executeExits`). Last-write-wins trigger/reason per
+    ///       The emergency speed lever: block every owner + delegate behind a
+    ///      set of known-malicious requests in a single Admin-multisig call.
+    function freezeFromRequest(uint256[] calldata requestIds, bool freezeReceiver, bytes32 reasonHash)
+        external
+        onlyAdminOrOwner
+    {
+        if (requestIds.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < requestIds.length; ++i) {
+            _blockFromRequest(requestIds[i], freezeReceiver, reasonHash, BlockState.Frozen);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Batch by-request-id blacklist. Same atomicity + last-write-
+    ///      wins semantics as the batch freeze above; a Frozen→Blacklisted
+    ///      escalation within a batch is handled by `_setBlock`.
+    function blacklistFromRequest(uint256[] calldata requestIds, bool freezeReceiver, bytes32 reasonHash)
+        external
+        onlyAdminOrOwner
+    {
+        if (requestIds.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < requestIds.length; ++i) {
+            _blockFromRequest(requestIds[i], freezeReceiver, reasonHash, BlockState.Blacklisted);
+        }
+    }
+
+    function _blockFromRequest(uint256 requestId, bool freezeReceiver, bytes32 reasonHash, BlockState to)
+        internal
+    {
+        ExitRequest storage r = _requests[requestId];
+        if (r.status == ExitStatus.None) revert UnknownRequest(requestId);
+        // originator always; owner too iff distinct; receiver only if flagged.
+        _setBlock(r.originator, to, requestId, reasonHash);
+        if (r.owner != r.originator) _setBlock(r.owner, to, requestId, reasonHash);
+        if (freezeReceiver) _setBlock(r.receiver, to, requestId, reasonHash);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function freeze(address a) external onlyAdminOrOwner {
+        _setBlock(a, BlockState.Frozen, 0, bytes32(0));
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function blacklist(address a) external onlyAdminOrOwner {
+        _setBlock(a, BlockState.Blacklisted, 0, bytes32(0));
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function unfreeze(address a) external onlyAdminOrOwner {
+        _clearBlock(a, BlockState.Frozen);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function unblacklist(address a) external onlyAdminOrOwner {
+        _clearBlock(a, BlockState.Blacklisted);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function downgradeToFrozen(address a) external onlyAdminOrOwner {
+        _downgradeToFrozen(a);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev EmptyIds guard: an empty array is a caller mistake, not a
+    ///      silent no-op — for consistency with the by-id batch variants.
+    function freeze(address[] calldata a) external onlyAdminOrOwner {
+        if (a.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < a.length; ++i) {
+            _setBlock(a[i], BlockState.Frozen, 0, bytes32(0));
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev EmptyIds guard.
+    function blacklist(address[] calldata a) external onlyAdminOrOwner {
+        if (a.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < a.length; ++i) {
+            _setBlock(a[i], BlockState.Blacklisted, 0, bytes32(0));
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev EmptyIds guard.
+    function unfreeze(address[] calldata a) external onlyAdminOrOwner {
+        if (a.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < a.length; ++i) {
+            _clearBlock(a[i], BlockState.Frozen);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev EmptyIds guard.
+    function unblacklist(address[] calldata a) external onlyAdminOrOwner {
+        if (a.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < a.length; ++i) {
+            _clearBlock(a[i], BlockState.Blacklisted);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev EmptyIds guard. Atomic like every other batch here: one address that
+    ///      is not Blacklisted refuses the whole call.
+    function downgradeToFrozen(address[] calldata a) external onlyAdminOrOwner {
+        if (a.length == 0) revert EmptyIds();
+        for (uint256 i = 0; i < a.length; ++i) {
+            _downgradeToFrozen(a[i]);
+        }
+    }
+
+    /// @dev Set (or escalate) a block. Frozen→Blacklisted is atomic (no unfreeze
+    ///      first). Re-block on an already-`to` state is a state no-op.
+    ///
+    ///      Evidence rule. `_blockTrigger` is the only on-chain link from a
+    ///      blocked address back to the request that explains it, and the flat
+    ///      levers (`freeze(address)` / `blacklist(address)` and their batches)
+    ///      carry none — they pass triggerId 0 and reason 0. So the trigger is
+    ///      written only by a call that carries evidence, or by the first block on
+    ///      a previously-unblocked address. A responder re-running a flat sweep
+    ///      over addresses already blocked by request id therefore cannot erase
+    ///      what the by-request pass recorded.
+    ///
+    ///      The event announces the trigger that HOLDS after the call, not the one
+    ///      the call passed, so `blockTrigger` is reconstructible from the log
+    ///      alone.
+    ///
+    ///      No Blacklisted → Frozen downgrade here: a blacklist is the strongest
+    ///      state and is weakened only by the explicit `downgradeToFrozen` or by
+    ///      `unblacklist`. An evidence-carrying freeze over a blacklisted address
+    ///      holds that state and records its evidence — which keeps the by-request
+    ///      emergency lever unconditional on a known id. An evidence-FREE freeze
+    ///      there would change nothing and record nothing, so it reverts rather
+    ///      than returning a success an operator reads as "now frozen".
+    function _setBlock(address a, BlockState to, uint256 triggerId, bytes32 reasonHash) internal {
+        if (a == address(0)) revert ZeroAddress();
+        BlockState from = _blockState[a];
+        bool carriesEvidence = triggerId != 0 || reasonHash != bytes32(0);
+
+        if (to == BlockState.Frozen && from == BlockState.Blacklisted) {
+            if (!carriesEvidence) revert AlreadyBlacklisted(a);
+            _blockTrigger[a] = triggerId;
+            emit AccountBlocked(a, from, triggerId, reasonHash);
+            return;
+        }
+        if (from == BlockState.None) {
+            _blockedAccounts.add(a);
+        }
+        _blockState[a] = to;
+        uint256 trigger = _blockTrigger[a];
+        if (carriesEvidence || from == BlockState.None) {
+            trigger = triggerId;
+            _blockTrigger[a] = triggerId;
+        }
+        emit AccountBlocked(a, to, trigger, reasonHash);
+    }
+
+    /// @dev The one call that weakens a block without unblocking first. Only
+    ///      Blacklisted → Frozen: every other starting state is a caller mistake
+    ///      (`unfreeze` clears a freeze, `blacklist` escalates one). The trigger is
+    ///      kept and re-announced — a downgrade says the address is still under
+    ///      investigation, so the evidence behind it still stands.
+    function _downgradeToFrozen(address a) internal {
+        if (a == address(0)) revert ZeroAddress();
+        if (_blockState[a] != BlockState.Blacklisted) revert NotBlacklisted(a);
+        _blockState[a] = BlockState.Frozen;
+        emit AccountBlocked(a, BlockState.Frozen, _blockTrigger[a], bytes32(0));
+    }
+
+    /// @dev Clear a block. `expected` selects which removal fn ran: unfreeze
+    ///      requires Frozen, unblacklist requires Blacklisted (wrong-removal
+    ///      reverts — footgun guard). Absent (`None`) always reverts.
+    function _clearBlock(address a, BlockState expected) internal {
+        BlockState from = _blockState[a];
+        if (expected == BlockState.Frozen) {
+            if (from != BlockState.Frozen) revert NotFrozen(a);
+        } else {
+            // expected == Blacklisted
+            if (from != BlockState.Blacklisted) revert NotBlacklisted(a);
+        }
+        _blockState[a] = BlockState.None;
+        _blockTrigger[a] = 0;
+        _blockedAccounts.remove(a);
+        emit AccountUnblocked(a, from);
+    }
+
+    function _requireNotBlocked(address a) internal view {
+        BlockState s = _blockState[a];
+        if (s != BlockState.None) revert ActorBlocked(a, s);
+    }
+
+    // ─── Pause ───────────────────────────────────────────────────
+
+    /// @inheritdoc IExitDelayQueue
+    function setSecurityPerimeterPaused(bool p) external onlyAdminOrOwner {
+        securityPerimeterPaused = p;
+        emit SecurityPerimeterPausedSet(p);
+    }
+
+    // ─── Recovery ────────────────────────────────────────────────
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Leg-2: recover once `isBlacklisted(originator) || isBlacklisted(owner)`
+    ///      (OR predicate); exact provenance match to an active route; a
+    ///      mixed batch reverts wholesale.
+    function resolveToProtocol(uint256[] calldata ids, bytes32 routeId)
+        external
+        nonReentrant
+        onlyAdminOrOwner
+    {
+        if (ids.length == 0) revert EmptyIds();
+        RecoveryRoute storage route = _recoveryRoutes[routeId];
+        if (!route.active) revert RouteInactive(routeId);
+        for (uint256 i = 0; i < ids.length; ++i) {
+            uint256 id = ids[i];
+            ExitRequest storage r = _requests[id];
+            if (r.status == ExitStatus.None) revert UnknownRequest(id);
+            if (r.status != ExitStatus.Queued) revert AlreadyTerminal(id);
+
+            // OR-blacklist authorization over source parties; receiver-only
+            // block never authorizes Leg-2.
+            bool authorized = _blockState[r.originator] == BlockState.Blacklisted
+                || _blockState[r.owner] == BlockState.Blacklisted;
+            if (!authorized) revert SourceNotBlacklisted(r.originator);
+
+            // Exact provenance: surface, subProduct, token must match.
+            if (r.surfaceId != route.surfaceId || r.subProduct != route.subProduct || r.token != route.token)
+            {
+                revert RouteProvenanceMismatch(id, routeId);
+            }
+
+            address token = r.token;
+            uint128 amount = r.amount;
+            r.status = ExitStatus.ResolvedToProtocol;
+            _removeActive(id, r.originator, r.owner);
+            _totalEscrowed[token] -= amount;
+
+            emit ExitResolvedToProtocol(id, routeId, route.destination, amount);
+            // topUpPool routes are a plain token top-up to the pool
+            // (destination == subProduct); both branches use the same primitive.
+            _payout(token, route.destination, amount, false);
+            _requireSolventAfterPayout(token, false);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Leg-3: the Owner's lever, reaching only a request with a blacklisted
+    ///      party. Neither a pause nor the delay window admits a request here:
+    ///      a hold keeps the money in place, and only the determination that a
+    ///      party is blacklisted releases it to a destination of the Owner's
+    ///      choosing. Everything else stays with the parties' own levers.
+    function resolveByOwner(uint256[] calldata ids, address destination) external nonReentrant onlyOwner {
+        if (ids.length == 0) revert EmptyIds();
+        // Same destination guard as recoverStuckExit's altReceiver: never the
+        // zero address, this contract (would trap the escrow), or WRBTC (a
+        // wrapped-token destination silently swallows an unwrap payout). The
+        // per-request `destination == token` case is rejected inside the loop.
+        if (destination == address(0) || destination == address(this) || destination == wrbtc) {
+            revert InvalidDestination(destination);
+        }
+        for (uint256 i = 0; i < ids.length; ++i) {
+            uint256 id = ids[i];
+            ExitRequest storage r = _requests[id];
+            if (r.status == ExitStatus.None) revert UnknownRequest(id);
+            if (r.status != ExitStatus.Queued) revert AlreadyTerminal(id);
+
+            // A blacklisted party — originator, owner or receiver — is the only
+            // thing that admits a request. A frozen party keeps it held but in
+            // place; a bouncing recipient is the parties' own matter, handled
+            // self-service via recoverStuckExit(id, altReceiver).
+            bool resolvable = _blockState[r.originator] == BlockState.Blacklisted
+                || _blockState[r.owner] == BlockState.Blacklisted
+                || _blockState[r.receiver] == BlockState.Blacklisted;
+            if (!resolvable) revert NotResolvableByOwner(id);
+
+            address token = r.token;
+            if (destination == token) revert InvalidDestination(destination);
+            uint128 amount = r.amount;
+            r.status = ExitStatus.ResolvedByOwner;
+            _removeActive(id, r.originator, r.owner);
+            _totalEscrowed[token] -= amount;
+
+            emit ExitResolvedByOwner(id, destination, amount);
+            _payout(token, destination, amount, false);
+            _requireSolventAfterPayout(token, false);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function setRecoveryRoute(RecoveryRoute calldata route) external onlyOwner returns (bytes32 routeId) {
+        // Destination guard, same as the resolve legs: never the zero address,
+        // this contract (would trap escrow), the escrowed token, or WRBTC (a
+        // wrapped-token destination swallows an unwrap payout). A topUpPool route
+        // is pinned tighter still, to route.subProduct, below.
+        if (
+            route.destination == address(0) || route.destination == address(this)
+                || route.destination == route.token || route.destination == wrbtc
+        ) revert InvalidDestination(route.destination);
+        // topUpPool routes restricted on-chain to feasible surfaces and
+        // to non-native tokens (a native request can never be Leg-2a).
+        if (route.topUpPool) {
+            if (!_topUpFeasible[route.surfaceId]) revert TopUpInfeasibleSurface(route.surfaceId);
+            if (route.token == address(0)) revert TopUpInfeasibleSurface(route.surfaceId);
+            // A top-up route means exactly one thing: restore the pool the exit
+            // came from. Without this, a route registered as `topUpPool` could
+            // name any destination, and a Leg-2 recovery would carry a blocked
+            // user's escrow there under the top-up label.
+            if (route.destination != route.subProduct) {
+                revert TopUpDestinationMismatch(route.destination, route.subProduct);
+            }
+        }
+        routeId = keccak256(abi.encode(route.surfaceId, route.subProduct, route.token, route.destination));
+        _recoveryRoutes[routeId] = route;
+        _recoveryRouteIds.add(routeId);
+        emit RecoveryRouteSet(
+            routeId, route.surfaceId, route.subProduct, route.token, route.destination, route.topUpPool
+        );
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function removeRecoveryRoute(bytes32 routeId) external onlyOwner {
+        delete _recoveryRoutes[routeId];
+        _recoveryRouteIds.remove(routeId);
+        emit RecoveryRouteRemoved(routeId);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function setTopUpFeasible(bytes32 surfaceId, bool feasible) external onlyOwner {
+        _topUpFeasible[surfaceId] = feasible;
+        emit TopUpFeasibleSet(surfaceId, feasible);
+    }
+
+    // ─── Config ──────────────────────────────────────────
+
+    /// @inheritdoc IExitDelayQueue
+    function addAllowedSource(address src) external onlyOwner {
+        if (src == address(0)) revert ZeroAddress();
+        if (_allowedSources.add(src)) {
+            _allowedSource[src] = true;
+            emit AllowedSourceSet(src, true);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function removeAllowedSource(address src) external onlyOwner {
+        if (_allowedSources.remove(src)) {
+            _allowedSource[src] = false;
+            emit AllowedSourceSet(src, false);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function setNativePusher(address pusher) external onlyOwner {
+        nativePusher = pusher;
+        emit NativePusherSet(pusher);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @notice Rotate the Admin guardian. Non-zero; MAY equal the Owner.
+    function setAdmin(address newAdmin) external onlyOwner {
+        if (newAdmin == address(0)) revert ZeroAddress();
+        admin = newAdmin;
+        emit AdminSet(newAdmin);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function setMinimumDelaySeconds(uint32 s) external onlyOwner {
+        minimumDelaySeconds = s;
+        emit MinimumDelaySet(s);
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Moves EXACTLY the non-backing surplus (balanceOf − totalEscrowed);
+    ///      provably never touches escrowed backing via the post-sweep solvency
+    ///      require, which uses a strict `<` so a post-sweep balance exactly
+    ///      equal to `escrowed` still passes.
+    function sweepSurplus(address token, address to) external nonReentrant onlyOwner {
+        if (to == address(0)) revert SweepToZero();
+        uint256 escrowed = _totalEscrowed[token];
+        if (token == address(0)) {
+            uint256 bal = address(this).balance;
+            uint256 surplus = bal > escrowed ? bal - escrowed : 0;
+            emit SurplusSwept(token, to, surplus);
+            if (surplus > 0) Address.sendValue(payable(to), surplus);
+            if (address(this).balance < escrowed) revert SolvencyViolated();
+        } else {
+            uint256 bal = IERC20(token).balanceOf(address(this));
+            uint256 surplus = bal > escrowed ? bal - escrowed : 0;
+            emit SurplusSwept(token, to, surplus);
+            if (surplus > 0) IERC20(token).safeTransfer(to, surplus);
+            if (IERC20(token).balanceOf(address(this)) < escrowed) revert SolvencyViolated();
+        }
+    }
+
+    // ─── Payout primitive ───────────────────────────────────────────────
+
+    /// @dev ERC20 safeTransfer / native sendValue / WRBTC-unwrap-then-sendValue.
+    ///      No fail-open: a reverting receiver rolls the whole call back
+    ///      (status already terminal → held until Leg-3 redirects).
+    ///
+    ///      LIMIT OF THE REMEDY CLAIM. All four disposal legs — execute, recover,
+    ///      resolve-to-protocol, resolve-by-owner — end here. Every reachable Queued
+    ///      state has a remedy within this contract's own state machine, but not
+    ///      beyond it: if an escrowed ERC20 later refuses to move this contract's
+    ///      balance (an upgradeable token adding a blocklist, a pause, a
+    ///      migration), all four revert and the escrow is unreachable by anyone,
+    ///      the Owner included. That is a property of holding third-party custody,
+    ///      not something this contract can guard against; it is stated here so it
+    ///      is not inherited unnoticed. None of the launch underlyings is known to
+    ///      carry a blocklist.
+    function _payout(address token, address to, uint128 amount, bool unwrap) internal {
+        if (token == address(0)) {
+            Address.sendValue(payable(to), amount);
+        } else if (unwrap) {
+            // WRBTC-escrowed: unwrap to native, then send native.
+            IWRBTC(token).withdraw(amount);
+            Address.sendValue(payable(to), amount);
+        } else {
+            IERC20(token).safeTransfer(to, amount);
+        }
+    }
+
+    /// @dev Every request still queued must remain fully backed after value
+    ///      leaves. A successful `safeTransfer` proves only that the token did
+    ///      not revert: a token that charges the SENDER on transfer — including
+    ///      an upgradeable one that only starts doing so after funds are
+    ///      escrowed — moves more than `amount` out while `_totalEscrowed` drops
+    ///      by exactly `amount`, leaving later exits short. `sweepSurplus`
+    ///      already enforces this after its own transfer; the payout paths are
+    ///      the other way value leaves, and must hold the same invariant.
+    ///
+    ///      Asserted by the CALLER, after the payout, and never inside `_payout`
+    ///      itself. `recoverStuckExit` attempts the stored receiver inside a
+    ///      try/catch whose bare `catch` reads ANY revert as that receiver
+    ///      bouncing: a solvency failure raised in there would be taken for a
+    ///      bounce and redirect the funds to the caller-selected alternate
+    ///      receiver, bypassing the immutable one and hiding the alarm. Raised
+    ///      out here it cannot be caught.
+    function _requireSolvent(address token) internal view {
+        uint256 balance = token == address(0) ? address(this).balance : IERC20(token).balanceOf(address(this));
+        if (balance < _totalEscrowed[token]) revert SolvencyViolated();
+    }
+
+    /// @dev Solvency for whichever balances a payout of `token` could move. The
+    ///      unwrap path spends WRBTC and sends native, so it touches both.
+    function _requireSolventAfterPayout(address token, bool unwrap) internal view {
+        _requireSolvent(token);
+        if (unwrap && token != address(0)) _requireSolvent(address(0));
+    }
+
+    // ─── Active-index maintenance ───────────────────────────────────────
+
+    /// @dev Remove an id from both party sets; single removal when equal.
+    function _removeActive(uint256 id, address originator, address owner_) internal {
+        _activeByParty[originator].remove(id);
+        if (owner_ != originator) _activeByParty[owner_].remove(id);
+    }
+
+    // ─── Views ───────────────────────────────────────────────────
+
+    /// @inheritdoc IExitDelayQueue
+    function getRequest(uint256 id) external view returns (ExitRequest memory) {
+        return _requests[id];
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    /// @dev Best-effort over a mutating set: a concurrent removal can
+    ///      skip/repeat; the ExitQueued/ExitExecuted events are the authoritative
+    ///      reconstruction source. `nextCursor == 0` signals end.
+    function getActive(address party, uint256 cursor, uint256 n)
+        external
+        view
+        returns (uint256[] memory ids, uint256 nextCursor)
+    {
+        if (n > MAX_GET_ACTIVE_PAGE) n = MAX_GET_ACTIVE_PAGE;
+        EnumerableSet.UintSet storage set = _activeByParty[party];
+        uint256 len = set.length();
+        if (cursor >= len || n == 0) {
+            return (new uint256[](0), 0);
+        }
+        uint256 end = cursor + n;
+        if (end > len) end = len;
+        ids = new uint256[](end - cursor);
+        for (uint256 i = cursor; i < end; ++i) {
+            ids[i - cursor] = set.at(i);
+        }
+        nextCursor = end >= len ? 0 : end;
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function blockStateOf(address a) external view returns (BlockState) {
+        return _blockState[a];
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function blockedAccounts(uint256 offset, uint256 limit)
+        external
+        view
+        returns (address[] memory page, uint256 total)
+    {
+        // Return the FULL blocked-set size `total` alongside the clamped `page`:
+        // a monitor/sanctions integrator paging
+        // this view knows the exact range ("showing offset..offset+page.length of
+        // total") and can never silently undercount past the 500 cap. `total` is
+        // the true EnumerableSet length regardless of offset/limit.
+        //
+        // Page clamp/cap (retained): cap the page size at
+        // MAX_GET_ACTIVE_PAGE and derive `end` from a bounded `limit` so
+        // `offset + limit` can never overflow-revert (a griefy caller passing a
+        // near-max offset/limit).
+        uint256 len = _blockedAccounts.length();
+        total = len;
+        if (limit > MAX_GET_ACTIVE_PAGE) limit = MAX_GET_ACTIVE_PAGE;
+        if (offset >= len || limit == 0) return (new address[](0), total);
+        uint256 end = offset + limit;
+        if (end > len) end = len;
+        page = new address[](end - offset);
+        for (uint256 i = offset; i < end; ++i) {
+            page[i - offset] = _blockedAccounts.at(i);
+        }
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function blockTrigger(address a) external view returns (uint256) {
+        return _blockTrigger[a];
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function totalEscrowed(address token) external view returns (uint256) {
+        return _totalEscrowed[token];
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function getRecoveryRoute(bytes32 routeId) external view returns (RecoveryRoute memory) {
+        return _recoveryRoutes[routeId];
+    }
+
+    /// @inheritdoc IExitDelayQueue
+    function allowedSources() external view returns (address[] memory) {
+        return _allowedSources.values();
+    }
+
+    /// @notice Enumerate registered recovery route ids (owner tooling).
+    function recoveryRouteIds() external view returns (bytes32[] memory) {
+        return _recoveryRouteIds.values();
+    }
+
+    /// @notice Whether a topUpPool route may be registered for `surfaceId`.
+    function topUpFeasible(bytes32 surfaceId) external view returns (bool) {
+        return _topUpFeasible[surfaceId];
+    }
+
+    /// @notice Whether `src` is a registered ingress source.
+    function isAllowedSource(address src) external view returns (bool) {
+        return _allowedSource[src];
+    }
+
+    // ─── Upgrade authorization (UUPS) ───────────────────────────────────
+
+    // aderyn-ignore-next-line(centralization-risk)
+    function _authorizeUpgrade(address newImplementation) internal view override onlyOwner {
+        if (newImplementation == address(0)) revert UpgradeImplZero();
+    }
+
+    /// @dev Disabled: an ownerless custody contract would lock escrowed funds
+    ///      forever (no execute-side auth changes, but no upgrade / no config /
+    ///      no recovery-config). The 2-step transfer is the only admin move.
+    function renounceOwnership() public pure override {
+        revert OwnershipCannotBeRenounced();
+    }
+
+    // `admin == owner` is a supported shape and nothing here enforces a
+    // separation: at launch one Safe holds both roles. The
+    // consequence is accepted — while the roles coincide the Leg-2/Leg-3
+    // authority split and its bounds are vacuous, and they become real only
+    // once ownership moves to Bitocracy while the guardian stays put.
+}

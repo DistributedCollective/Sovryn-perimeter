@@ -10,7 +10,7 @@ import {ExitFeeVault} from "../src/ExitFeeVault.sol";
 /// @title  Bootstrap ExitFeeVault
 /// @notice Configures a freshly-deployed vault proxy (deployed by
 ///         `01_DeployVault.s.sol`, owned by the deployer wallet) and
-///         queues an Ownable2Step handoff to the governance Safe.
+///         queues an Ownable2Step handoff to the Owner.
 ///         Mirrors the controller's bootstrap pattern: set state with
 ///         the deployer wallet in one signed batch, then transfer
 ///         ownership.
@@ -26,7 +26,7 @@ import {ExitFeeVault} from "../src/ExitFeeVault.sol";
 ///           3. transferOwnership(EXIT_FEE_VAULT_ADMIN)
 ///              -- queues the Ownable2Step handoff.
 ///
-///         After this script, the governance Safe must call
+///         After this script, the Owner must call
 ///         `vault.acceptOwnership()` in a follow-up Safe transaction to
 ///         complete the handoff. Until then the deployer is still the
 ///         active owner.
@@ -98,7 +98,7 @@ contract BootstrapVault is Script {
         console2.log("");
         console2.log("transferOwnership queued -> pendingOwner =", finalOwner);
         console2.log("");
-        console2.log("FINAL STEP (governance Safe): call vault.acceptOwnership()");
+        console2.log("FINAL STEP (Owner): call vault.acceptOwnership()");
         console2.log("Until then, deployer is still the active owner.");
     }
 }

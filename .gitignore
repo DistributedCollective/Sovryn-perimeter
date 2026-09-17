@@ -14,6 +14,10 @@ broadcast/*/31337/
 deployments/31337/
 deployments/31338/
 crytic-export/
+# slither-mutate campaign output. Written into the repo root by the tool; the
+# release gate refuses to run against a dirty tree, so an uncommitted campaign
+# directory would block it.
+mutation_campaign/
 
 # Secrets
 .env

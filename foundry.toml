@@ -29,6 +29,20 @@ fs_permissions = [
 # the actual emitted warning code, and add it below. Do not guess the value.
 # ignored_error_codes = [<code>]
 
+[profile.default.invariant]
+# Bounded so the stateful ExitDelayQueue suite (22 handler selectors, per-step
+# index-consistency assertions that page the active sets) completes in CI time.
+# Raise runs/depth for a deeper campaign; the defaults (256×500) are too heavy
+# for the O(n) index paging on every step.
+runs = 64
+depth = 60
+#  the handlers try/catch every EXPECTED queue revert and the non-queue
+# ops (token/native transfers off a huge pre-funded balance, force-sends,
+# vm.warp) are revert-free by construction, so the suite is revert-free and we
+# assert it. The prior `(aSeed+1)%3` receiver index was fixed to `(aSeed%3+1)%3`
+# (no more 0x11 overflow-panic at a max seed) so nothing leaks past the catches.
+fail_on_revert = true
+
 [profile.default.fmt]
 line_length = 110
 
@@ -39,6 +53,20 @@ line_length = 110
 # WRBTC / ERC20 / RBTC naming convention). Strict mixedCase (sweepErc20)
 # would diverge from the spec without functional benefit.
 exclude_lints = ["mixed-case-function"]
+
+# Every contract under src/, script/ and test/ pins `pragma solidity 0.8.20` exactly, so
+# auto_detect_solc already resolves one version for all of them regardless of what else is
+# installed. The vendored proxy below carries a floating `pragma solidity ^0.8.0`, so
+# auto-detection is free to resolve whichever 0.8.x is newest on the machine running
+# `forge build`, which can compile the same source into different deployed bytecode on
+# different machines. That proxy is what the deploy scripts put on chain, so its compile
+# group is restricted to the same 0.8.20 every other contract here already resolves to --
+# an exact version, not a range, so a newer 0.8.x cannot satisfy it. Scoped to this one
+# path rather than a global solc pin: the 0.4.26 legacy interface under src/interfaces/v0_4
+# needs its own compiler and would fail to build under a repo-wide 0.8.20 pin.
+[[profile.default.compilation_restrictions]]
+paths = "lib/openzeppelin-contracts/contracts/proxy/ERC1967/ERC1967Proxy.sol"
+version = "=0.8.20"
 
 [rpc_endpoints]
 rsk_mainnet = "${RSK_MAINNET_RPC}"
