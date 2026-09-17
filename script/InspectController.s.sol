@@ -96,8 +96,9 @@ contract InspectController is Script {
         console2.log("");
 
         // ── single-guardian identity assertion. The controller keeps its
-        //    OWN local `admin` (used ONLY by the kill switch) and NEVER reads
-        //    queue.admin() at runtime (that would couple the kill switch to queue
+        //    OWN local `admin` (used by the kill switch AND by setFeeReceiver,
+        //    which re-points where the Perimeter fee is paid) and NEVER reads
+        //    queue.admin() at runtime (that would couple those levers to queue
         //    liveness and break). Instead this tooling asserts, at
         //    deploy/inspect time, that the two guardians are ONE identity so a
         //    single Safe bundle rotates both. Off unless the queue artifact exists.
