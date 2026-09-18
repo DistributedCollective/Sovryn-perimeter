@@ -109,9 +109,10 @@ contract ExitDelayQueue is
 
     mapping(uint256 => ExitRequest) internal _requests;
 
-    /// @dev Recorded party (originator, owner) → status==Queued request ids.
-    ///      A freeze HOLDS but does not remove (Frozen is an address state, not
-    ///      a request status). Dual-key when originator != owner. No
+    /// @dev Recorded party (originator, owner, receiver) → status==Queued
+    ///      request ids. A freeze HOLDS but does not remove (Frozen is an
+    ///      address state, not a request status). Keyed by up to three
+    ///      addresses; EnumerableSet dedups when any of them coincide. No
     ///      on-chain path iterates the full set — only O(1) add/remove and the
     ///      paginated `getActive` view touch it.
     mapping(address => EnumerableSet.UintSet) internal _activeByParty;
@@ -153,8 +154,8 @@ contract ExitDelayQueue is
 
     /// @notice While true, the queue pays nobody through the user-facing legs:
     ///         `executeExit`, `executeExits` and `recoverStuckExit` revert
-    ///         `QueuePaused` for every caller — originator, owner, and anyone
-    ///         delivering a contract-owned request. Users therefore have no path
+    ///         `QueuePaused` for every caller — originator, owner, receiver, and
+    ///         anyone delivering a contract-owned request. Users therefore have no path
     ///         of their own while it holds.
     ///         What stays live: ingress (the four `record*` functions and
     ///         `receive`), so withdrawals keep escrowing; the block levers; the
@@ -436,9 +437,10 @@ contract ExitDelayQueue is
         r.status = ExitStatus.Queued;
         r.unwrapOnDelivery = unwrapOnDelivery;
 
-        // Dual-key insert; EnumerableSet dedups when originator == owner.
+        // Triple-key insert; EnumerableSet dedups when any of the three coincide.
         _activeByParty[effOrig].add(id);
         _activeByParty[effOwner].add(id);
+        _activeByParty[receiver].add(id);
 
         _totalEscrowed[token] += amount;
 
@@ -469,20 +471,21 @@ contract ExitDelayQueue is
     }
 
     /// @dev Shared execution core — always pays the immutable `receiver`.
-    ///      Who may deliver: the originator or the owner; and, when the owner
-    ///      is a contract, anyone — a contract owner cannot press the button
-    ///      itself, and delivery goes only to the receiver fixed at escrow
-    ///      time, so widening the executor set adds no destination. Block gate
-    ///      covers the executor and `{originator, owner, receiver}`. CEI:
-    ///      terminal status + escrow decrement + set removal ALL before the
-    ///      external transfer (`nonReentrant`).
+    ///      Who may deliver: the originator, the owner or the receiver; and,
+    ///      when the owner is a contract, anyone — a contract owner cannot
+    ///      press the button itself, and delivery goes only to the receiver
+    ///      fixed at escrow time, so widening the executor set adds no
+    ///      destination. Block gate covers the executor and
+    ///      `{originator, owner, receiver}`. CEI: terminal status + escrow
+    ///      decrement + set removal ALL before the external transfer
+    ///      (`nonReentrant`).
     function _executeOne(uint256 requestId) internal {
         if (securityPerimeterPaused) revert QueuePaused();
         ExitRequest storage r = _requests[requestId];
         if (r.status == ExitStatus.None) revert UnknownRequest(requestId);
         if (r.status != ExitStatus.Queued) revert AlreadyTerminal(requestId);
         if (block.timestamp < r.unlockAt) revert NotUnlocked(requestId, r.unlockAt);
-        bool party = msg.sender == r.originator || msg.sender == r.owner;
+        bool party = msg.sender == r.originator || msg.sender == r.owner || msg.sender == r.receiver;
         if (!party && r.owner.code.length == 0) revert NotExecutor(msg.sender);
 
         _requireNotBlocked(r.originator);
@@ -498,7 +501,7 @@ contract ExitDelayQueue is
         bool unwrap = r.unwrapOnDelivery;
 
         r.status = ExitStatus.Executed;
-        _removeActive(requestId, r.originator, r.owner);
+        _removeActive(requestId, r.originator, r.owner, receiver);
         _totalEscrowed[token] -= amount;
 
         emit ExitExecuted(requestId, receiver, token, amount);
@@ -564,7 +567,7 @@ contract ExitDelayQueue is
         bool unwrap = r.unwrapOnDelivery;
 
         r.status = ExitStatus.Executed;
-        _removeActive(id, r.originator, r.owner);
+        _removeActive(id, r.originator, r.owner, receiver);
         _totalEscrowed[token] -= amount;
 
         // Attempt the STORED-receiver payout first (a healthy exit pays here and
@@ -872,7 +875,7 @@ contract ExitDelayQueue is
             address token = r.token;
             uint128 amount = r.amount;
             r.status = ExitStatus.ResolvedToProtocol;
-            _removeActive(id, r.originator, r.owner);
+            _removeActive(id, r.originator, r.owner, r.receiver);
             _totalEscrowed[token] -= amount;
 
             emit ExitResolvedToProtocol(id, routeId, route.destination, amount);
@@ -917,7 +920,7 @@ contract ExitDelayQueue is
             if (destination == token) revert InvalidDestination(destination);
             uint128 amount = r.amount;
             r.status = ExitStatus.ResolvedByOwner;
-            _removeActive(id, r.originator, r.owner);
+            _removeActive(id, r.originator, r.owner, r.receiver);
             _totalEscrowed[token] -= amount;
 
             emit ExitResolvedByOwner(id, destination, amount);
@@ -1090,10 +1093,12 @@ contract ExitDelayQueue is
 
     // ─── Active-index maintenance ───────────────────────────────────────
 
-    /// @dev Remove an id from both party sets; single removal when equal.
-    function _removeActive(uint256 id, address originator, address owner_) internal {
+    /// @dev Remove an id from every recorded party's set; skip a set already
+    ///      cleared for an earlier-checked address that coincides with it.
+    function _removeActive(uint256 id, address originator, address owner_, address receiver) internal {
         _activeByParty[originator].remove(id);
         if (owner_ != originator) _activeByParty[owner_].remove(id);
+        if (receiver != originator && receiver != owner_) _activeByParty[receiver].remove(id);
     }
 
     // ─── Views ───────────────────────────────────────────────────

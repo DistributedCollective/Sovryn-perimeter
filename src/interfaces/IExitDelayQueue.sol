@@ -60,7 +60,7 @@ interface IExitDelayQueue {
         // words 2-5:
         address originator; // withdrawal caller the hook saw — block key + executor
         address owner; //      position owner — MANDATORY block key + executor
-        address receiver; //   immutable payout destination — block key iff freezeReceiver; may recover, but not a deliverer
+        address receiver; //   immutable payout destination — block key iff freezeReceiver; may recover and may deliver
         address token; //      address(0) = native RBTC
         // word 6:
         bytes32 surfaceId; //  provenance: recovery-route key
@@ -124,7 +124,7 @@ interface IExitDelayQueue {
 
     error UnregisteredSource(address caller); //  onlyAllowedSource — DISTINCT record-path halt selector
     error ActorBlocked(address actor, BlockState state); // execution-gate revert (event: AccountBlocked)
-    error NotExecutor(address caller); //         delivery: msg.sender ∉ {originator, owner} and the owner has no code; recovery: ∉ {originator, owner, receiver}
+    error NotExecutor(address caller); //         delivery: msg.sender ∉ {originator, owner, receiver} and the owner has no code; recovery: ∉ {originator, owner, receiver}
     error NotUnlocked(uint256 id, uint64 unlockAt);
     error QueuePaused();
     error AlreadyTerminal(uint256 id); //         status != Queued at a transition (also duplicate-batch-id)
@@ -217,10 +217,10 @@ interface IExitDelayQueue {
     // ─── Execution ───────────────────────────────────────────────
 
     /// @notice Pay an unlocked request to its recorded receiver. Who may call:
-    ///         the request's originator or owner, always; ANYONE, when the recorded
-    ///         owner has code at the moment of this call (a contract, or a wallet
-    ///         that has delegated to code), because a contract owner cannot press
-    ///         the button itself. The owner's code is read when delivery is called,
+    ///         the request's originator, owner or receiver, always; ANYONE, when
+    ///         the recorded owner has code at the moment of this call (a contract,
+    ///         or a wallet that has delegated to code), because a contract owner
+    ///         cannot press the button itself. The owner's code is read when delivery is called,
     ///         not when the request was recorded. Whoever calls, the money goes
     ///         only to the recorded receiver, and the call reverts while the
     ///         originator, the owner or the receiver is frozen or blacklisted. A
