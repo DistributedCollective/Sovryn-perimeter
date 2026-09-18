@@ -262,9 +262,10 @@ contract ExitDelayQueueHandler is Test {
 
     /// @dev Batch release. `executeExits` is atomic and every id in it is paid
     ///      by the same caller, so the second id joins only when the first id's
-    ///      originator is a party to it too; otherwise a one-element batch runs
-    ///      (still the batch entry point, still the `EmptyIds` guard's other
-    ///      side). Ghost accounting is applied once per request actually paid.
+    ///      originator is a party to it too (originator, owner or receiver);
+    ///      otherwise a one-element batch runs (still the batch entry point,
+    ///      still the `EmptyIds` guard's other side). Ghost accounting is
+    ///      applied once per request actually paid.
     function executeMany(uint256 seedA, uint256 seedB) external {
         if (liveIds.length == 0) return;
         uint256 idA = liveIds[seedA % liveIds.length];
@@ -273,7 +274,7 @@ contract ExitDelayQueueHandler is Test {
         if (a.status != IExitDelayQueue.ExitStatus.Queued) return;
         IExitDelayQueue.ExitRequest memory b = queue.getRequest(idB);
         bool pair = idB != idA && b.status == IExitDelayQueue.ExitStatus.Queued
-            && (b.originator == a.originator || b.owner == a.originator);
+            && (b.originator == a.originator || b.owner == a.originator || b.receiver == a.originator);
         _warpPastUnlock(a.unlockAt, pair ? b.unlockAt : 0);
         uint256[] memory ids = new uint256[](pair ? 2 : 1);
         ids[0] = idA;

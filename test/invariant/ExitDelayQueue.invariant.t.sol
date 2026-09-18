@@ -134,13 +134,17 @@ contract ExitDelayQueueInvariant is Test {
             // requests and must never retroactively extend an already-Queued exit,
             // so asserting against the live floor would falsely trip after a raise.
             assertGe(uint256(r.unlockAt) - uint256(r.createdAt), uint256(handler.floorAtCreation(id)));
-            //  for the originator, id ∈ active iff Queued.
+            // for each recorded party (originator, owner, receiver), id ∈ active
+            // iff Queued.
             bool inSet = _inActive(r.originator, id);
             if (r.status == IExitDelayQueue.ExitStatus.Queued) {
                 assertTrue(inSet, "queued id must be in originator active set");
+                assertTrue(_inActive(r.owner, id), "queued id must be in owner active set");
+                assertTrue(_inActive(r.receiver, id), "queued id must be in receiver active set");
             } else {
                 assertFalse(inSet, "terminal id must NOT be in originator active set");
                 assertFalse(_inActive(r.owner, id), "terminal id must NOT be in owner active set");
+                assertFalse(_inActive(r.receiver, id), "terminal id must NOT be in receiver active set");
             }
         }
     }

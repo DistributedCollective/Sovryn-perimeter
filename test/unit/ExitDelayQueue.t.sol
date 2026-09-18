@@ -657,11 +657,72 @@ contract ExitDelayQueueTest is Test {
         assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.Executed));
     }
 
-    function test_executeExit_reverts_receiver_not_executor() public {
+    function test_executeExit_by_receiver_after_unlock() public {
+        uint128 amount = 100 ether;
+        _queueErc20(amount);
+        vm.warp(block.timestamp + DELAY);
+        uint256 rcvrBefore = token.balanceOf(RCVR);
+        vm.prank(RCVR);
+        queue.executeExit(1);
+        assertEq(token.balanceOf(RCVR), rcvrBefore + amount);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.Executed));
+        assertEq(queue.totalEscrowed(address(token)), 0);
+    }
+
+    function test_executeExit_by_receiver_reverts_before_unlock() public {
+        _queueErc20(10 ether);
+        vm.prank(RCVR);
+        vm.expectRevert(
+            abi.encodeWithSelector(IExitDelayQueue.NotUnlocked.selector, 1, uint64(block.timestamp + DELAY))
+        );
+        queue.executeExit(1);
+    }
+
+    function test_executeExit_by_receiver_reverts_when_paused() public {
+        _queueErc20(10 ether);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ADMIN);
+        queue.setSecurityPerimeterPaused(true);
+        vm.prank(RCVR);
+        vm.expectRevert(IExitDelayQueue.QueuePaused.selector);
+        queue.executeExit(1);
+    }
+
+    function test_executeExit_by_receiver_reverts_double_execute() public {
         _queueErc20(10 ether);
         vm.warp(block.timestamp + DELAY);
         vm.prank(RCVR);
-        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, RCVR));
+        queue.executeExit(1);
+        vm.prank(RCVR);
+        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.AlreadyTerminal.selector, 1));
+        queue.executeExit(1);
+    }
+
+    function test_executeExit_by_receiver_reverts_when_originator_frozen() public {
+        _queueErc20(10 ether);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ADMIN);
+        queue.freeze(ORIG);
+        vm.prank(RCVR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, ORIG, IExitDelayQueue.BlockState.Frozen
+            )
+        );
+        queue.executeExit(1);
+    }
+
+    function test_executeExit_by_receiver_reverts_when_owner_blacklisted() public {
+        _queueErc20(10 ether);
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ADMIN);
+        queue.blacklist(OWNR);
+        vm.prank(RCVR);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ActorBlocked.selector, OWNR, IExitDelayQueue.BlockState.Blacklisted
+            )
+        );
         queue.executeExit(1);
     }
 
@@ -784,6 +845,19 @@ contract ExitDelayQueueTest is Test {
         vm.prank(OWNR);
         vm.expectRevert(IExitDelayQueue.EmptyIds.selector);
         queue.executeExits(ids);
+    }
+
+    function test_executeExits_batch_by_receiver_after_unlock() public {
+        _queueErc20(1 ether);
+        _queueErc20(2 ether);
+        vm.warp(block.timestamp + DELAY);
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = 1;
+        ids[1] = 2;
+        vm.prank(RCVR);
+        queue.executeExits(ids);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.Executed));
+        assertEq(uint256(queue.getRequest(2).status), uint256(IExitDelayQueue.ExitStatus.Executed));
     }
 
     // ── block model ──
@@ -2105,6 +2179,13 @@ contract ExitDelayQueueTest is Test {
         assertEq(next2, 0); // end
     }
 
+    function test_getActive_lists_request_for_receiver_after_enqueue() public {
+        _queueErc20(1 ether);
+        (uint256[] memory ids,) = queue.getActive(RCVR, 0, 10);
+        assertEq(ids.length, 1);
+        assertEq(ids[0], 1);
+    }
+
     function test_getActive_removed_on_execute() public {
         _queueErc20(1 ether);
         vm.warp(block.timestamp + DELAY);
@@ -2113,7 +2194,9 @@ contract ExitDelayQueueTest is Test {
         (uint256[] memory ids,) = queue.getActive(OWNR, 0, 10);
         assertEq(ids.length, 0);
         (uint256[] memory ids2,) = queue.getActive(ORIG, 0, 10);
-        assertEq(ids2.length, 0); // removed from BOTH sets
+        assertEq(ids2.length, 0);
+        (uint256[] memory ids3,) = queue.getActive(RCVR, 0, 10);
+        assertEq(ids3.length, 0); // removed from ALL THREE sets
     }
 
     function test_getActive_dual_key_dedup_when_equal() public {
@@ -2121,6 +2204,34 @@ contract ExitDelayQueueTest is Test {
         source.recordERC20(address(token), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, ORIG, RCVR, false);
         (uint256[] memory ids,) = queue.getActive(ORIG, 0, 10);
         assertEq(ids.length, 1);
+    }
+
+    function test_getActive_dedup_when_receiver_equals_originator() public {
+        // receiver == originator, owner distinct → single set entry, no double add.
+        uint256 id =
+            source.recordERC20(address(token), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, ORIG, false);
+        (uint256[] memory ids,) = queue.getActive(ORIG, 0, 10);
+        assertEq(ids.length, 1, "no double add when receiver == originator");
+
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(OWNR);
+        queue.executeExit(id); // must not revert despite the coinciding removal
+        (uint256[] memory idsAfter,) = queue.getActive(ORIG, 0, 10);
+        assertEq(idsAfter.length, 0, "single removal when receiver == originator");
+    }
+
+    function test_getActive_dedup_when_receiver_equals_owner() public {
+        // receiver == owner, originator distinct → single set entry, no double add.
+        uint256 id =
+            source.recordERC20(address(token), 1 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, OWNR, false);
+        (uint256[] memory ids,) = queue.getActive(OWNR, 0, 10);
+        assertEq(ids.length, 1, "no double add when receiver == owner");
+
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(ORIG);
+        queue.executeExit(id); // must not revert despite the coinciding removal
+        (uint256[] memory idsAfter,) = queue.getActive(OWNR, 0, 10);
+        assertEq(idsAfter.length, 0, "single removal when receiver == owner");
     }
 
     function test_freeze_does_not_remove_from_active() public {
@@ -2893,16 +3004,13 @@ contract ExitDelayQueueTest is Test {
 
     // ─── Who may deliver: parties always; anyone when the owner is a contract ──
 
-    /// @notice A wallet-owned request is delivered only by its originator or owner.
+    /// @notice A wallet-owned request is delivered only by its originator, owner
+    ///         or receiver; a caller matching none of the three is refused.
     function test_execute_outsider_reverts_when_owner_is_a_wallet() public {
         uint256 id = _queueErc20With(10 ether, ORIG, OWNR, RCVR);
         vm.warp(block.timestamp + DELAY);
         vm.prank(OUTSIDER);
         vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, OUTSIDER));
-        queue.executeExit(id);
-        // The receiver is not an executor either.
-        vm.prank(RCVR);
-        vm.expectRevert(abi.encodeWithSelector(IExitDelayQueue.NotExecutor.selector, RCVR));
         queue.executeExit(id);
     }
 

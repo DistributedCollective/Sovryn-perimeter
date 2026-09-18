@@ -204,7 +204,7 @@ contract EchidnaExitDelayQueue {
         if (a.status != IExitDelayQueue.ExitStatus.Queued) return;
         IExitDelayQueue.ExitRequest memory b = queue.getRequest(idB);
         bool pair = idB != idA && b.status == IExitDelayQueue.ExitStatus.Queued
-            && (b.originator == address(this) || b.owner == address(this));
+            && (b.originator == address(this) || b.owner == address(this) || b.receiver == address(this));
         uint256[] memory ids = new uint256[](pair ? 2 : 1);
         ids[0] = idA;
         if (pair) ids[1] = idB;
@@ -267,7 +267,7 @@ contract EchidnaExitDelayQueue {
         if (paused) return false;
         if (r.status != IExitDelayQueue.ExitStatus.Queued) return false;
         if (block.timestamp < r.unlockAt) return false;
-        bool party = address(this) == r.originator || address(this) == r.owner;
+        bool party = address(this) == r.originator || address(this) == r.owner || address(this) == r.receiver;
         return party || r.owner.code.length > 0;
     }
 

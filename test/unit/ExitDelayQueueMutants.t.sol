@@ -370,8 +370,10 @@ contract ExitDelayQueueMutantsTest is Test {
 
         (uint256[] memory origActive,) = queue.getActive(ORIG, 0, 10);
         (uint256[] memory ownrActive,) = queue.getActive(OWNR, 0, 10);
+        (uint256[] memory rcvrActive,) = queue.getActive(RCVR, 0, 10);
         assertEq(origActive.length, 0, "originator's active set not pruned by recovery");
         assertEq(ownrActive.length, 0, "owner's active set not pruned by recovery");
+        assertEq(rcvrActive.length, 0, "receiver's active set not pruned by recovery");
     }
 
     /// @notice The single-id `freezeFromRequest` overload is gated
@@ -484,8 +486,10 @@ contract ExitDelayQueueMutantsTest is Test {
 
         (uint256[] memory origActive,) = queue.getActive(ORIG, 0, 10);
         (uint256[] memory ownrActive,) = queue.getActive(OWNR, 0, 10);
+        (uint256[] memory rcvrActive,) = queue.getActive(RCVR, 0, 10);
         assertEq(origActive.length, 0, "originator's active set not pruned by resolveToProtocol");
         assertEq(ownrActive.length, 0, "owner's active set not pruned by resolveToProtocol");
+        assertEq(rcvrActive.length, 0, "receiver's active set not pruned by resolveToProtocol");
     }
 
     /// @notice `resolveToProtocol` is `nonReentrant`, guarding its own
@@ -596,8 +600,10 @@ contract ExitDelayQueueMutantsTest is Test {
 
         (uint256[] memory origActive,) = queue.getActive(ORIG, 0, 10);
         (uint256[] memory ownrActive,) = queue.getActive(OWNR, 0, 10);
+        (uint256[] memory rcvrActive,) = queue.getActive(RCVR, 0, 10);
         assertEq(origActive.length, 0, "originator's active set not pruned by resolveByOwner");
         assertEq(ownrActive.length, 0, "owner's active set not pruned by resolveByOwner");
+        assertEq(rcvrActive.length, 0, "receiver's active set not pruned by resolveByOwner");
 
         // Solvency: a token that turns fee-on-transfer after escrow must still
         // trip the post-payout backstop on this leg.
