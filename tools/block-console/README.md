@@ -18,7 +18,11 @@ Enter an RPC endpoint and the `ExitDelayQueue` proxy address, then load.
 
 - **Lists requests from chain.** With no address filter it walks every recorded id;
   with one or more addresses it uses the queue's own per-party index, so filtering
-  stays exact rather than guessing from a scan.
+  stays exact rather than guessing from a scan. Filtering by an address also matches
+  requests in which that address is only the receiver, so "Select all shown" then
+  includes rows whose originators and owners — the payers — a from-request freeze or
+  blacklist would block; the selection panel lists every address before anything is
+  sent.
 - **Selection replaces typing.** Request ids are ticked from the list, never entered
   by hand. Only `Queued` rows can be selected, because the on-chain batch is atomic
   and one terminal id would revert the whole call.
