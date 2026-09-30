@@ -11,7 +11,7 @@ root = "."
 exclude = [
     # Every admin function (setExitFeeEnabled, setFeeReceiver, setSurfacePolicy,
     # setSubProductPolicy*, setActorPolicy*) is intentionally owner-gated.
-    # The controller is governance-owned (TimelockOwner on mainnet); the
+    # The controller is Owner-owned (TimelockOwner on mainnet); the
     # ExitFeeVault is admin-swept. "Centralization" is the design.
     "centralization-risk",
 
@@ -22,8 +22,8 @@ exclude = [
 
     # Same batch setters revert atomically on validation failure (zero address,
     # rate-above-MAX_BPS). Atomic application is the desired semantic:
-    # governance wants "all-or-nothing" for policy changes, not "partial apply
+    # the Owner wants "all-or-nothing" for policy changes, not "partial apply
     # with a list of failures". Better to revert the whole batch than to
-    # leave the controller in a half-configured state for governance.
+    # leave the controller in a half-configured state for the Owner.
     "require-revert-in-loop",
 ]

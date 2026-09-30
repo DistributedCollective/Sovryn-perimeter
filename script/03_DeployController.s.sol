@@ -11,7 +11,7 @@ import {ExitFeeController} from "../src/ExitFeeController.sol";
 /// @notice Deploys the controller impl + ERC1967Proxy with the broadcast
 ///         wallet (the keystore account used to sign this script) as the
 ///         INITIAL owner. The deployer keeps owner power for the bootstrap
-///         phase; ownership is handed off to the governance Safe via
+///         phase; ownership is handed off to the Owner via
 ///         Ownable2Step in `script/04_BootstrapController.s.sol`.
 ///
 ///         No configuration applied here -- the controller is left in safe
@@ -27,7 +27,7 @@ contract DeployController is Script {
         // The initial owner is baked into the proxy's initialize() calldata, so
         // it becomes permanent on-chain state and must be the account that
         // actually signs -- 04_BootstrapController runs from it before handing
-        // off to the governance Safe.
+        // off to the Owner.
         //
         // Read it from the unlocked signer, NOT from tx.origin: forge resolves
         // tx.origin during the SIMULATION pass, where it is a placeholder of
@@ -59,6 +59,6 @@ contract DeployController is Script {
         console2.log("");
         console2.log("Next: run tools/finalize-deployment.sh, then");
         console2.log("      forge script script/04_BootstrapController.s.sol");
-        console2.log("      to configure + hand off to the governance Safe.");
+        console2.log("      to configure + hand off to the Owner.");
     }
 }
