@@ -2699,6 +2699,581 @@ contract ExitDelayQueueTest is Test {
         source.recordReceivedNative(5 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
     }
 
+    // ── measured-receipt ingress while the backing is already below the recorded escrow ──
+    //
+    // A negative rebase, a clawback or a token that takes from its holder can leave the
+    // queue holding less of an asset than it has recorded as escrow. The measured-receipt
+    // paths then see no surplus: a push first has to close the shortfall, and only what is
+    // left after that counts toward the amount being recorded.
+
+    /// @dev Records `escrow` of the token through the measured path, then lowers the queue's
+    ///      token balance by `shortfall`.
+    function _shortBackedErc20(uint128 escrow, uint128 shortfall) internal {
+        source.recordReceivedERC20(address(token), escrow, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
+        deal(address(token), address(queue), escrow - shortfall);
+        assertEq(queue.totalEscrowed(address(token)), escrow);
+        assertEq(token.balanceOf(address(queue)), escrow - shortfall);
+    }
+
+    /// @dev Native twin of `_shortBackedErc20`.
+    function _shortBackedNative(uint128 escrow, uint128 shortfall) internal {
+        pusher.push(payable(address(queue)), escrow);
+        source.recordReceivedNative(escrow, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+        vm.deal(address(queue), escrow - shortfall);
+        assertEq(queue.totalEscrowed(address(0)), escrow);
+        assertEq(address(queue).balance, escrow - shortfall);
+    }
+
+    /// @notice A push smaller than the shortfall leaves the backing below the escrow, so the
+    ///         measured surplus is zero and the record is refused. Nothing is recorded.
+    function test_recordReceivedERC20_short_backing_refuses_deposit_below_shortfall() public {
+        _shortBackedErc20(100 ether, 30 ether);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector, address(token), uint256(0), uint256(10 ether)
+            )
+        );
+        source.recordReceivedERC20(address(token), 10 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+        assertEq(token.balanceOf(address(queue)), 70 ether);
+    }
+
+    /// @notice A push that exactly closes the shortfall leaves the backing equal to the escrow:
+    ///         still no surplus, so the record is refused.
+    function test_recordReceivedERC20_short_backing_refuses_deposit_equal_to_shortfall() public {
+        _shortBackedErc20(100 ether, 30 ether);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector, address(token), uint256(0), uint256(30 ether)
+            )
+        );
+        source.recordReceivedERC20(address(token), 30 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+        assertEq(token.balanceOf(address(queue)), 70 ether);
+    }
+
+    /// @notice A push larger than the shortfall still under-delivers: the measured surplus is the
+    ///         push minus the shortfall, which is less than the amount claimed.
+    function test_recordReceivedERC20_short_backing_refuses_deposit_above_shortfall() public {
+        _shortBackedErc20(100 ether, 30 ether);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector,
+                address(token),
+                uint256(20 ether),
+                uint256(50 ether)
+            )
+        );
+        source.recordReceivedERC20(address(token), 50 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+        assertEq(token.balanceOf(address(queue)), 70 ether);
+    }
+
+    /// @notice The refusal lasts until the shortfall is fully covered: a partial top-up still
+    ///         refuses, and once the backing is whole again the same deposit records normally.
+    function test_recordReceivedERC20_short_backing_records_once_topped_up() public {
+        _shortBackedErc20(100 ether, 30 ether);
+
+        // Top up 20 of the 30: a shortfall of 10 remains, so 15 measures as 5.
+        deal(address(token), address(queue), 90 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector,
+                address(token),
+                uint256(5 ether),
+                uint256(15 ether)
+            )
+        );
+        source.recordReceivedERC20(address(token), 15 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+        assertEq(token.balanceOf(address(queue)), 90 ether);
+
+        // Fully topped up: the backing equals the escrow and the deposit is all surplus.
+        deal(address(token), address(queue), 100 ether);
+        uint256 id =
+            source.recordReceivedERC20(address(token), 15 ether, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
+        assertEq(id, 2);
+        assertEq(queue.getRequest(id).amount, 15 ether);
+        assertEq(queue.totalEscrowed(address(token)), 115 ether);
+        assertEq(token.balanceOf(address(queue)), 115 ether);
+    }
+
+    /// @notice Whatever the shortfall and the amount, a measured deposit on a short-backed queue is
+    ///         refused, and the surplus it reports is the push minus the shortfall, floored at zero.
+    function testFuzz_recordReceivedERC20_short_backing_always_refused(uint128 shortfall, uint128 amount)
+        public
+    {
+        shortfall = uint128(bound(shortfall, 1, 100 ether));
+        amount = uint128(bound(amount, 1, 1000 ether));
+        _shortBackedErc20(100 ether, shortfall);
+
+        uint256 surplus = amount > shortfall ? amount - shortfall : 0;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector, address(token), surplus, uint256(amount)
+            )
+        );
+        source.recordReceivedERC20(address(token), amount, DELAY, SURFACE, SUBPRODUCT, ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+        assertEq(token.balanceOf(address(queue)), 100 ether - shortfall);
+    }
+
+    /// @notice The pull path proves receipt from the balance change across its own transfer and
+    ///         never compares the balance with the escrow, so a shortfall neither blocks it nor is
+    ///         closed by it: the escrow and the balance both grow by the amount.
+    function test_recordERC20_pull_path_records_while_backing_is_short() public {
+        _shortBackedErc20(100 ether, 30 ether);
+
+        uint256 id = _queueErc20(10 ether);
+
+        assertEq(id, 2);
+        assertEq(queue.totalEscrowed(address(token)), 110 ether);
+        assertEq(token.balanceOf(address(queue)), 80 ether);
+    }
+
+    /// @notice Native: a push smaller than the shortfall leaves no measured surplus; refused.
+    function test_recordReceivedNative_short_backing_refuses_deposit_below_shortfall() public {
+        _shortBackedNative(100 ether, 30 ether);
+
+        pusher.push(payable(address(queue)), 10 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector, address(0), uint256(0), uint256(10 ether)
+            )
+        );
+        source.recordReceivedNative(10 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+    }
+
+    /// @notice Native: a push that exactly closes the shortfall leaves no surplus; refused.
+    function test_recordReceivedNative_short_backing_refuses_deposit_equal_to_shortfall() public {
+        _shortBackedNative(100 ether, 30 ether);
+
+        pusher.push(payable(address(queue)), 30 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector, address(0), uint256(0), uint256(30 ether)
+            )
+        );
+        source.recordReceivedNative(30 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+    }
+
+    /// @notice Native: a push larger than the shortfall still under-delivers by the shortfall.
+    function test_recordReceivedNative_short_backing_refuses_deposit_above_shortfall() public {
+        _shortBackedNative(100 ether, 30 ether);
+
+        pusher.push(payable(address(queue)), 50 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector,
+                address(0),
+                uint256(20 ether),
+                uint256(50 ether)
+            )
+        );
+        source.recordReceivedNative(50 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+    }
+
+    /// @notice Native: a partial top-up still refuses; once the backing is whole the deposit records.
+    function test_recordReceivedNative_short_backing_records_once_topped_up() public {
+        _shortBackedNative(100 ether, 30 ether);
+
+        // Top up 20 of the 30: a shortfall of 10 remains, so a push of 15 measures as 5.
+        vm.deal(address(queue), 90 ether);
+        pusher.push(payable(address(queue)), 15 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector,
+                address(0),
+                uint256(5 ether),
+                uint256(15 ether)
+            )
+        );
+        source.recordReceivedNative(15 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+
+        // Fully topped up: the backing equals the escrow and the push is all surplus.
+        vm.deal(address(queue), 100 ether);
+        pusher.push(payable(address(queue)), 15 ether);
+        uint256 id = source.recordReceivedNative(15 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+        assertEq(id, 2);
+        assertEq(queue.getRequest(id).amount, 15 ether);
+        assertEq(queue.totalEscrowed(address(0)), 115 ether);
+        assertEq(address(queue).balance, 115 ether);
+    }
+
+    /// @notice Native: whatever the shortfall and the amount, the record is refused and the surplus
+    ///         it reports is the push minus the shortfall, floored at zero.
+    function testFuzz_recordReceivedNative_short_backing_always_refused(uint128 shortfall, uint128 amount)
+        public
+    {
+        shortfall = uint128(bound(shortfall, 1, 100 ether));
+        amount = uint128(bound(amount, 1, 1000 ether));
+        _shortBackedNative(100 ether, shortfall);
+
+        pusher.push(payable(address(queue)), amount);
+        uint256 surplus = amount > shortfall ? amount - shortfall : 0;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IExitDelayQueue.ReceivedAmountMismatch.selector, address(0), surplus, uint256(amount)
+            )
+        );
+        source.recordReceivedNative(amount, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+        assertEq(queue.lastRequestId(), 1);
+    }
+
+    // ── value-out paths while the backing is already below the recorded escrow ──
+    //
+    // Every path that pays value out (`executeExit`, `executeExits`, `recoverStuckExit`,
+    // `resolveToProtocol`, `resolveByOwner`) and the owner sweep assert, after value has
+    // left, that the balance still covers the escrow that remains. With the backing short,
+    // that holds for none of them, even when the balance alone could pay the request at
+    // hand: the asset is held until the backing is restored, and then pays in full.
+
+    /// @dev Two unlocked requests of 100 (ids 1 and 2, parties ORIG / OWNR / RCVR) with the
+    ///      token's backing lowered to 150 of the 200 escrowed.
+    function _shortBackedUnlockedErc20() internal {
+        _queueErc20(100 ether);
+        _queueErc20(100 ether);
+        deal(address(token), address(queue), 150 ether);
+        vm.warp(block.timestamp + DELAY);
+    }
+
+    /// @dev Native twin of `_shortBackedUnlockedErc20`.
+    function _shortBackedUnlockedNative() internal {
+        for (uint256 i = 0; i < 2; ++i) {
+            pusher.push(payable(address(queue)), 100 ether);
+            source.recordReceivedNative(100 ether, DELAY, SURFACE_ZERO, address(0), ORIG, OWNR, RCVR);
+        }
+        vm.deal(address(queue), 150 ether);
+        vm.warp(block.timestamp + DELAY);
+    }
+
+    /// @dev A third party, not a party to any request, sends `amount` of the token to the queue.
+    function _topUpErc20(uint256 amount) internal {
+        token.mint(OUTSIDER, amount);
+        vm.prank(OUTSIDER);
+        token.transfer(address(queue), amount);
+    }
+
+    /// @dev A third party, not a party to any request, sends `amount` of native RBTC to the queue.
+    function _topUpNative(uint256 amount) internal {
+        vm.deal(OUTSIDER, amount);
+        vm.prank(OUTSIDER);
+        (bool ok,) = payable(address(queue)).call{value: amount}("");
+        assertTrue(ok);
+    }
+
+    function _idsOf(uint256 id) internal pure returns (uint256[] memory ids) {
+        ids = new uint256[](1);
+        ids[0] = id;
+    }
+
+    /// @dev A Leg-2 route for the native requests recorded by `_shortBackedUnlockedNative`.
+    function _setupNativeRoute() internal returns (bytes32 routeId) {
+        IExitDelayQueue.RecoveryRoute memory route = IExitDelayQueue.RecoveryRoute({
+            active: true,
+            surfaceId: SURFACE_ZERO,
+            subProduct: address(0),
+            token: address(0),
+            destination: address(0xDE57),
+            topUpPool: false
+        });
+        vm.prank(OWNER);
+        routeId = queue.setRecoveryRoute(route);
+    }
+
+    /// @dev The state every refused value-out call must leave behind: both requests queued,
+    ///      the escrow untouched.
+    function _assertStillHeld(address asset, uint256 escrow) internal view {
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.Queued));
+        assertEq(uint256(queue.getRequest(2).status), uint256(IExitDelayQueue.ExitStatus.Queued));
+        assertEq(queue.totalEscrowed(asset), escrow);
+    }
+
+    /// @notice ERC20: an unlocked request the remaining balance could cover is still refused
+    ///         with `SolvencyViolated`, stays queued, and pays once anyone tops the backing up
+    ///         to the escrow.
+    function test_executeExit_short_backing_reverts_solvency_until_topped_up_erc20() public {
+        _shortBackedUnlockedErc20();
+
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.executeExit(1);
+        _assertStillHeld(address(token), 200 ether);
+        assertEq(token.balanceOf(address(queue)), 150 ether);
+        assertEq(token.balanceOf(RCVR), 0);
+
+        _topUpErc20(50 ether);
+
+        vm.prank(OWNR);
+        queue.executeExit(1);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.Executed));
+        assertEq(token.balanceOf(RCVR), 100 ether);
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+        assertEq(token.balanceOf(address(queue)), 100 ether);
+    }
+
+    /// @notice ERC20: the batch delivery is refused the same way and pays once the backing is whole.
+    function test_executeExits_short_backing_reverts_solvency_until_topped_up_erc20() public {
+        _shortBackedUnlockedErc20();
+
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.executeExits(_idsOf(1));
+        _assertStillHeld(address(token), 200 ether);
+        assertEq(token.balanceOf(address(queue)), 150 ether);
+
+        _topUpErc20(50 ether);
+
+        vm.prank(OWNR);
+        queue.executeExits(_idsOf(1));
+        assertEq(token.balanceOf(RCVR), 100 ether);
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+    }
+
+    /// @notice ERC20: recovery pays the stored receiver healthily, so the refusal comes from the
+    ///         solvency check and is not read as a bounce that would redirect to the alternate.
+    function test_recoverStuckExit_short_backing_reverts_solvency_until_topped_up_erc20() public {
+        _shortBackedUnlockedErc20();
+
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.recoverStuckExit(1, ALT);
+        _assertStillHeld(address(token), 200 ether);
+        assertEq(token.balanceOf(address(queue)), 150 ether);
+        assertEq(token.balanceOf(ALT), 0);
+
+        _topUpErc20(50 ether);
+
+        vm.prank(OWNR);
+        queue.recoverStuckExit(1, ALT);
+        assertEq(token.balanceOf(RCVR), 100 ether);
+        assertEq(token.balanceOf(ALT), 0);
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+    }
+
+    /// @notice ERC20: the Leg-2 return to a pool route is refused while the asset is short.
+    function test_resolveToProtocol_short_backing_reverts_solvency_until_topped_up_erc20() public {
+        _shortBackedUnlockedErc20();
+        bytes32 routeId = _setupRoute(false);
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+
+        vm.prank(ADMIN);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.resolveToProtocol(_idsOf(1), routeId);
+        _assertStillHeld(address(token), 200 ether);
+        assertEq(token.balanceOf(address(queue)), 150 ether);
+        assertEq(token.balanceOf(address(0xDE57)), 0);
+
+        _topUpErc20(50 ether);
+
+        vm.prank(ADMIN);
+        queue.resolveToProtocol(_idsOf(1), routeId);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedToProtocol));
+        assertEq(token.balanceOf(address(0xDE57)), 100 ether);
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+    }
+
+    /// @notice ERC20: the Owner's return of a blacklisted party's request is refused while the
+    ///         asset is short.
+    function test_resolveByOwner_short_backing_reverts_solvency_until_topped_up_erc20() public {
+        _shortBackedUnlockedErc20();
+        vm.prank(ADMIN);
+        queue.blacklist(RCVR);
+        address dest = address(0x7EEA);
+
+        vm.prank(OWNER);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.resolveByOwner(_idsOf(1), dest);
+        _assertStillHeld(address(token), 200 ether);
+        assertEq(token.balanceOf(address(queue)), 150 ether);
+        assertEq(token.balanceOf(dest), 0);
+
+        _topUpErc20(50 ether);
+
+        vm.prank(OWNER);
+        queue.resolveByOwner(_idsOf(1), dest);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedByOwner));
+        assertEq(token.balanceOf(dest), 100 ether);
+        assertEq(queue.totalEscrowed(address(token)), 100 ether);
+    }
+
+    /// @notice ERC20: the owner sweep is refused while the asset is short, and works as soon as
+    ///         the backing exceeds the escrow, moving exactly the excess.
+    function test_sweepSurplus_short_backing_reverts_solvency_until_topped_up_erc20() public {
+        _shortBackedUnlockedErc20();
+        address to = address(0x5EE);
+
+        vm.prank(OWNER);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.sweepSurplus(address(token), to);
+        assertEq(token.balanceOf(address(queue)), 150 ether);
+
+        // The missing 50 plus 5 of genuine surplus.
+        _topUpErc20(55 ether);
+
+        vm.prank(OWNER);
+        queue.sweepSurplus(address(token), to);
+        assertEq(token.balanceOf(to), 5 ether);
+        assertEq(token.balanceOf(address(queue)), 200 ether);
+        assertEq(queue.totalEscrowed(address(token)), 200 ether);
+    }
+
+    /// @notice Native: an unlocked request the remaining balance could cover is still refused
+    ///         with `SolvencyViolated`, stays queued, and pays once anyone tops the backing up
+    ///         to the escrow.
+    function test_executeExit_short_backing_reverts_solvency_until_topped_up_native() public {
+        _shortBackedUnlockedNative();
+
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.executeExit(1);
+        _assertStillHeld(address(0), 200 ether);
+        assertEq(address(queue).balance, 150 ether);
+        assertEq(RCVR.balance, 0);
+
+        _topUpNative(50 ether);
+
+        vm.prank(OWNR);
+        queue.executeExit(1);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.Executed));
+        assertEq(RCVR.balance, 100 ether);
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+        assertEq(address(queue).balance, 100 ether);
+    }
+
+    /// @notice Native: the batch delivery is refused the same way and pays once the backing is whole.
+    function test_executeExits_short_backing_reverts_solvency_until_topped_up_native() public {
+        _shortBackedUnlockedNative();
+
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.executeExits(_idsOf(1));
+        _assertStillHeld(address(0), 200 ether);
+        assertEq(address(queue).balance, 150 ether);
+
+        _topUpNative(50 ether);
+
+        vm.prank(OWNR);
+        queue.executeExits(_idsOf(1));
+        assertEq(RCVR.balance, 100 ether);
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+    }
+
+    /// @notice Native: recovery pays the stored receiver healthily, so the refusal comes from the
+    ///         solvency check and is not read as a bounce that would redirect to the alternate.
+    function test_recoverStuckExit_short_backing_reverts_solvency_until_topped_up_native() public {
+        _shortBackedUnlockedNative();
+
+        vm.prank(OWNR);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.recoverStuckExit(1, ALT);
+        _assertStillHeld(address(0), 200 ether);
+        assertEq(address(queue).balance, 150 ether);
+        assertEq(ALT.balance, 0);
+
+        _topUpNative(50 ether);
+
+        vm.prank(OWNR);
+        queue.recoverStuckExit(1, ALT);
+        assertEq(RCVR.balance, 100 ether);
+        assertEq(ALT.balance, 0);
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+    }
+
+    /// @notice Native: the Leg-2 return to a pool route is refused while the asset is short.
+    function test_resolveToProtocol_short_backing_reverts_solvency_until_topped_up_native() public {
+        _shortBackedUnlockedNative();
+        bytes32 routeId = _setupNativeRoute();
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+
+        vm.prank(ADMIN);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.resolveToProtocol(_idsOf(1), routeId);
+        _assertStillHeld(address(0), 200 ether);
+        assertEq(address(queue).balance, 150 ether);
+        assertEq(address(0xDE57).balance, 0);
+
+        _topUpNative(50 ether);
+
+        vm.prank(ADMIN);
+        queue.resolveToProtocol(_idsOf(1), routeId);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedToProtocol));
+        assertEq(address(0xDE57).balance, 100 ether);
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+    }
+
+    /// @notice Native: the Owner's return of a blacklisted party's request is refused while the
+    ///         asset is short.
+    function test_resolveByOwner_short_backing_reverts_solvency_until_topped_up_native() public {
+        _shortBackedUnlockedNative();
+        vm.prank(ADMIN);
+        queue.blacklist(RCVR);
+        address dest = address(0x7EEA);
+
+        vm.prank(OWNER);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.resolveByOwner(_idsOf(1), dest);
+        _assertStillHeld(address(0), 200 ether);
+        assertEq(address(queue).balance, 150 ether);
+        assertEq(dest.balance, 0);
+
+        _topUpNative(50 ether);
+
+        vm.prank(OWNER);
+        queue.resolveByOwner(_idsOf(1), dest);
+        assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.ResolvedByOwner));
+        assertEq(dest.balance, 100 ether);
+        assertEq(queue.totalEscrowed(address(0)), 100 ether);
+    }
+
+    /// @notice Native: the owner sweep is refused while the asset is short, and works as soon as
+    ///         the backing exceeds the escrow, moving exactly the excess.
+    function test_sweepSurplus_short_backing_reverts_solvency_until_topped_up_native() public {
+        _shortBackedUnlockedNative();
+        address to = address(0x5EE);
+
+        vm.prank(OWNER);
+        vm.expectRevert(IExitDelayQueue.SolvencyViolated.selector);
+        queue.sweepSurplus(address(0), to);
+        assertEq(address(queue).balance, 150 ether);
+
+        // The missing 50 plus 5 of genuine surplus.
+        _topUpNative(55 ether);
+
+        vm.prank(OWNER);
+        queue.sweepSurplus(address(0), to);
+        assertEq(to.balance, 5 ether);
+        assertEq(address(queue).balance, 200 ether);
+        assertEq(queue.totalEscrowed(address(0)), 200 ether);
+    }
+
     // ── resolveToProtocol guard arms: EmptyIds / RouteInactive / UnknownRequest / AlreadyTerminal ──
 
     function test_resolveToProtocol_empty_ids_reverts() public {
