@@ -715,8 +715,8 @@ contract ExitFeeController is IExitFeeController, Initializable, UUPSUpgradeable
     }
 
     /// @notice Withdraw an actor-tier exemption on `surfaceId` in one call.
-    ///         The fee entry is written inactive, so the surface rate applies
-    ///         again; the delay entry is written active with no bypass, so the
+    ///         The fee entry is written inactive, restoring the sub-product
+    ///         or surface policy; the delay entry is active with no bypass, so the
     ///         delay applies whatever a wider tier says. Writing the delay entry
     ///         inactive instead would fall through to that wider tier and leave
     ///         the actor exempt while its own row read as withdrawn.

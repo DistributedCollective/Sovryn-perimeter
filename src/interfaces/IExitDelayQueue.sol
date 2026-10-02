@@ -55,12 +55,12 @@ interface IExitDelayQueue {
     struct ExitRequest {
         // word 1 (128 + 64 + 64 = 256 bits):
         uint128 amount; //    narrowed from the uint256 Perimeter amount at record
-        uint64 createdAt; //  audit/analytics; emitted in ExitQueued
+        uint64 createdAt; //  creation timestamp; readable through getRequest
         uint64 unlockAt; //   COMPUTED by the queue = createdAt + delaySeconds
         // words 2-5:
         address originator; // withdrawal caller the hook saw — block key + executor
         address owner; //      position owner — MANDATORY block key + executor
-        address receiver; //   immutable payout destination — block key iff freezeReceiver; may recover and may deliver
+        address receiver; //   immutable payout destination — checked on release; may recover and may deliver
         address token; //      address(0) = native RBTC
         // word 6:
         bytes32 surfaceId; //  provenance: recovery-route key
@@ -247,8 +247,8 @@ interface IExitDelayQueue {
     ///         Requires the request Queued, unlocked, and the queue not paused.
     ///
     ///         Attempts the STORED-receiver payout FIRST; pays `altReceiver` ONLY if
-    ///         the stored-receiver payout genuinely bounces — so a HEALTHY exit is
-    ///         never redirected and there is NO stored failure flag. If
+    ///         the stored-receiver attempt fails, including out-of-gas. There is
+    ///         NO stored failure flag. If
     ///         `altReceiver` also fails, the whole call reverts (funds stay Queued).
     ///
     ///         Block gate covers ALL FOUR actors — `{originator, owner, STORED
@@ -261,8 +261,8 @@ interface IExitDelayQueue {
     ///         hold.
     ///
     ///         GAS: the caller's gas limit is the budget for the stored-receiver
-    ///         attempt; a receiver that needs more is simply retried with a
-    ///         higher limit. The EVM keeps 1/64 of the remaining gas back from
+    ///         attempt. An underfunded attempt can redirect a receiver that would
+    ///         accept payment with more gas. The EVM keeps 1/64 back from
     ///         the attempt, which is what pays `altReceiver` when the receiver
     ///         consumes everything — so supply enough for both legs.
     function recoverStuckExit(uint256 id, address altReceiver) external;
@@ -346,8 +346,8 @@ interface IExitDelayQueue {
     // ─── Views ───────────────────────────────────────────────────
 
     // `payoutExternal` is deliberately not declared here: it is the
-    // `SelfOnly`-guarded self-call trampoline `executeExit`/`recoverStuckExit`
-    // use to reach the same payout path, not a member of the external ABI a
+    // `SelfOnly`-guarded self-call trampoline `recoverStuckExit` uses for its
+    // catchable payout attempt, not a member of the external ABI a
     // caller or client is meant to use.
 
     function getRequest(uint256 id) external view returns (ExitRequest memory);

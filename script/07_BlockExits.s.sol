@@ -303,6 +303,7 @@ contract BlockExits is Script {
     ///      while it costs nothing.
     function _blockByAddress(bool freezing, address[] memory actors) internal view {
         require(actors.length > 0, "set BLOCK_ACTORS or BLOCK_REQUEST_IDS");
+        _validateActors(actors, false);
         bytes memory data = freezing
             ? abi.encodeWithSignature("freeze(address[])", actors)
             : abi.encodeWithSignature("blacklist(address[])", actors);
@@ -424,6 +425,19 @@ contract BlockExits is Script {
 
     // --- Blacklisted -> Frozen ------------------------------------------
 
+    /// @dev Clear/downgrade require distinct actors: a second transition for
+    ///      the same address would revert the batch. Blocks permit repeats.
+    function _validateActors(address[] memory actors, bool requireDistinct) internal pure {
+        for (uint256 i = 0; i < actors.length; ++i) {
+            require(actors[i] != address(0), "BLOCK_ACTORS contains the zero address");
+            if (requireDistinct) {
+                for (uint256 j = 0; j < i; ++j) {
+                    require(actors[i] != actors[j], "BLOCK_ACTORS contains a duplicate address");
+                }
+            }
+        }
+    }
+
     /// @dev The one call that weakens a block without unblocking first, for an
     ///      address blacklisted in haste that should only be held while it is
     ///      investigated. The queue reverts on any address that is not
@@ -431,6 +445,7 @@ contract BlockExits is Script {
     function _downgrade(address[] memory actors, uint256[] memory ids) internal view {
         require(actors.length > 0, "set BLOCK_ACTORS");
         require(ids.length == 0, "downgrade is by address only - the queue has no by-request downgrade");
+        _validateActors(actors, true);
 
         bool wouldRevert;
         for (uint256 i = 0; i < actors.length; ++i) {
@@ -466,6 +481,7 @@ contract BlockExits is Script {
     ///      address is checked here first.
     function _clear(bool unfreezing, address[] memory actors, uint256[] memory ids) internal view {
         require(actors.length > 0, "set BLOCK_ACTORS");
+        _validateActors(actors, true);
         require(ids.length == 0, "clears are by address only - the queue has no by-request clear");
 
         IExitDelayQueue.BlockState required =

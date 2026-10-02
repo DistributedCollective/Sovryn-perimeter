@@ -459,6 +459,37 @@ contract BlockExitsTest is Test {
 
     // --- happy paths ----------------------------------------------------
 
+    function test_freeze_rejects_zero_actor_before_building_calldata() public {
+        vm.expectRevert(bytes("BLOCK_ACTORS contains the zero address"));
+        script.dispatch("freeze", _addrs2(ORIG, address(0)), _noIds(), "");
+    }
+
+    function test_blacklist_rejects_zero_actor_before_building_calldata() public {
+        vm.expectRevert(bytes("BLOCK_ACTORS contains the zero address"));
+        script.dispatch("blacklist", _addrs2(ORIG, address(0)), _noIds(), "");
+    }
+
+    function test_unfreeze_rejects_duplicate_actors_before_building_calldata() public {
+        vm.prank(ADMIN);
+        queue.freeze(ORIG);
+        vm.expectRevert(bytes("BLOCK_ACTORS contains a duplicate address"));
+        script.dispatch("unfreeze", _addrs2(ORIG, ORIG), _noIds(), "");
+    }
+
+    function test_unblacklist_rejects_duplicate_actors_before_building_calldata() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        vm.expectRevert(bytes("BLOCK_ACTORS contains a duplicate address"));
+        script.dispatch("unblacklist", _addrs2(ORIG, ORIG), _noIds(), "");
+    }
+
+    function test_downgrade_rejects_duplicate_actors_before_building_calldata() public {
+        vm.prank(ADMIN);
+        queue.blacklist(ORIG);
+        vm.expectRevert(bytes("BLOCK_ACTORS contains a duplicate address"));
+        script.dispatch("downgrade", _addrs2(ORIG, ORIG), _noIds(), "");
+    }
+
     function test_freeze_and_blacklist_preview_by_actor() public view {
         script.dispatch("freeze", _addrs(ORIG), _noIds(), "");
         script.dispatch("blacklist", _addrs(ORIG), _noIds(), "");

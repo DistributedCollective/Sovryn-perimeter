@@ -91,8 +91,8 @@ contract ExitDelayQueue is
     // A bouncing honest recipient is handled self-service by the
     // {originator, owner, receiver} set via the dedicated
     // recoverStuckExit(id, altReceiver) leg — which attempts the STORED
-    // receiver FIRST and pays altReceiver only on a genuine bounce (verify-by-
-    // attempting; a healthy exit is NEVER redirected). There is no stored
+    // receiver FIRST and pays altReceiver if that attempt fails, including
+    // insufficient gas for the receiver. There is no stored
     // failure flag, no Admin/Owner recovery path, and no request re-targeting.
     // The all-four-actor block gate covers the STORED receiver so a blocked
     // original receiver refuses recovery and falls to Leg-3.
@@ -193,7 +193,6 @@ contract ExitDelayQueue is
         if (!_allowedSource[msg.sender]) revert UnregisteredSource(msg.sender);
         _;
     }
-
 
     // ─── Construction / initialization ──────────────────────────────────
 
@@ -520,9 +519,9 @@ contract ExitDelayQueue is
     ///
     ///      VERIFY-BY-ATTEMPTING: after CEI (status → Executed, escrow decremented,
     ///      sets pruned), the STORED-receiver payout is attempted FIRST. If it
-    ///      SUCCEEDS, that is the payout and `altReceiver` is unused — a HEALTHY
-    ///      exit is NEVER redirected. Only if the stored-receiver payout genuinely
-    ///      REVERTS do we pay `altReceiver`; if `altReceiver` also fails, the whole
+    ///      SUCCEEDS, that is the payout and `altReceiver` is unused. A failed
+    ///      attempt, including a receiver out-of-gas, falls through to
+    ///      `altReceiver`; if `altReceiver` also fails, the whole
     ///      call reverts and the funds stay Queued (CEI rollback).
     ///
     ///      ALL-FOUR-ACTOR block gate: none of `{originator, owner, STORED
@@ -570,9 +569,9 @@ contract ExitDelayQueue is
         _removeActive(id, r.originator, r.owner, receiver);
         _totalEscrowed[token] -= amount;
 
-        // Attempt the STORED-receiver payout first (a healthy exit pays here and
-        // altReceiver is never used, even when altReceiver == receiver). Only on a
-        // GENUINE bounce do we fall through to altReceiver — tracked by an explicit
+        // Attempt the STORED-receiver payout first. A successful attempt never
+        // uses altReceiver; a failed attempt, including out-of-gas, falls through
+        // to altReceiver — tracked by an explicit
         // bool, NOT an address compare, so a request whose stored receiver equals
         // altReceiver is paid exactly ONCE.
         address paid;
@@ -598,8 +597,9 @@ contract ExitDelayQueue is
     ///      inside `recoverStuckExit`'s guard, and CEI already made the state safe.
     ///
     ///      The attempt is given the gas the transaction carries: the caller's
-    ///      gas limit is the budget, and a receiver that needs more is retried
-    ///      with more. The EVM forwards at most 63/64 of what remains, so a
+    ///      gas limit is the budget. An underfunded attempt can redirect a
+    ///      receiver that would accept payment with more gas. The EVM forwards
+    ///      at most 63/64 of what remains, so a
     ///      receiver that consumes everything it is given still leaves the
     ///      1/64 that pays `altReceiver`, provided the caller supplied enough
     ///      for both; a caller who did not sees the whole call revert.
