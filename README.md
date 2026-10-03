@@ -296,3 +296,91 @@ When the interface changes here, each home repo re-copies its respective file (w
 ## License
 
 MIT. See [LICENSE](LICENSE).
+# Finalize an upgrade executed by a multisig
+
+The direct `99_UpgradeProxy` finalization path requires a real Foundry broadcast.
+For a controller owned by the existing 3-of-7 `MultiSigWallet`, use the separate
+receipt-backed mode after the wallet has executed the upgrade:
+
+```sh
+tools/finalize-deployment.sh --multisig-upgrade \
+  --manifest /absolute/path/upgrade-manifest.json \
+  --manifest-sha256 <sha256-of-that-file> \
+  --rpc-url <explicit-read-only-RPC>
+```
+
+This makes only RPC reads and atomically updates the explicitly bound existing
+deployment record. It requires the real implementation creation transaction and
+the actual wallet `confirmTransaction` or `executeTransaction` receipt; it does
+not create a `99_UpgradeProxy` broadcast. Mine submissions/confirmations separately
+in fork tests: the before-state anchor is the parent of the execution block.
+Historical RPC state is required. Canonical hashes are rechecked; production
+finality depth remains an operator requirement.
+
+Manifest version 1 (replace every placeholder with reviewed chain evidence):
+
+```json
+{
+  "schemaVersion": 1,
+  "contractName": "ExitFeeController",
+  "chainId": 30,
+  "proxyAddress": "0x...",
+  "implementationAddress": "0x...",
+  "implementationDeploymentTx": "0x...",
+  "proxyRuntimeCodeHash": "0x...",
+  "wallet": {
+    "address": "0x...",
+    "transactionId": 123,
+    "executionTx": "0x...",
+    "required": 3,
+    "owners": ["0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x..."],
+    "runtimeCodeHash": "0x..."
+  },
+  "previousRecord": {"path": "deployments/30/ExitFeeController.json", "sha256": "..."},
+  "artifact": {"path": "/absolute/path/ExitFeeController.json", "sha256": "..."},
+  "profile": {"path": "/absolute/path/PROVENANCE.json", "sha256": "..."},
+  "expectedState": {
+    "owner": "0x...",
+    "pendingOwner": "0x0000000000000000000000000000000000000000",
+    "admin": "0x...",
+    "feeReceiver": "0x...",
+    "exitFeeEnabled": true
+  },
+  "extraSurfaceIds": []
+}
+```
+
+Paths are absolute or relative to the manifest directory. The record path must
+already exist; its exact SHA256, chain, proxy and rollback implementation are
+checked. The reviewed profile uses the readiness `PROVENANCE.json` shape:
+`source_pin`, a controller entry under `contracts` with artifact SHA256, compiler,
+optimizer, EVM, runtime-template keccak and immutable references, and a successful
+controller entry under `native_compiler_replay.checks`. The supported profile is
+Solc 0.8.20, Paris, optimizer 200, no viaIR, IPFS metadata. Its five UUPS self-address
+references are hydrated exactly; every other runtime byte, including metadata,
+must match chain code. A profile hash binds a reviewed compiler proof; it does
+not replace independent source/compiler verification.
+
+The tool checks seven owners, quorum and executed wallet state, exact zero-value
+`upgradeTo(address)` intent, ordered wallet/proxy logs in the same receipt, old
+and new implementation slots/code, owners, fee configuration and layout. It
+preserves all old non-gap storage words and policies/indexes under the five
+canonical fee surfaces plus declared extra IDs. Declare arbitrary existing
+surface IDs explicitly; the tool cannot discover unenumerable mapping keys.
+
+The record retains existing consumer fields. `deploymentTx` is the real wallet
+execution transaction; `implementationDeploymentTx` is separate. `finalization`
+contains real receipts/transactions, block anchors, quorum, reviewed hashes,
+preserved-state coverage and the exact prior record for rollback. Timestamp
+milliseconds remain compatible with existing records, with an explicit unit
+and UTC labels. Conflicts/reorgs/failures leave the record unchanged; an identical
+verified replay is a no-op.
+
+For explorer source verification, use the receipt-backed sentinel and supply
+the exact reviewed artifact. This checks current source hashes and compiler
+settings before submitting sources, and does not require a fake broadcast:
+
+```sh
+VERIFY_BUILD_ARTIFACT=/absolute/path/ExitFeeController.json \
+  tools/verify-deployment.sh ExitFeeController multisig-upgrade 30
+```

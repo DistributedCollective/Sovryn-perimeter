@@ -42,6 +42,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Receipt-backed multisig executions are not Foundry upgrade broadcasts.
+# Keep this route explicit; the existing three-argument path is unchanged.
+if [ "${1:-}" = "--multisig-upgrade" ]; then
+    shift
+    exec python3 tools/finalize-multisig-upgrade.py "$@"
+fi
+
 if [ $# -ne 3 ]; then
     echo "usage: $0 <ContractName> <ScriptBaseName> <chainId>" >&2
     exit 1
