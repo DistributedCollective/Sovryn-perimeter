@@ -30,3 +30,6 @@ mutation_campaign/
 
 # Node (for any tooling/scripts)
 node_modules/
+
+# Python release-guard tests
+__pycache__/

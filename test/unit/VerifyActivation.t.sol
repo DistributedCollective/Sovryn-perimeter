@@ -194,6 +194,14 @@ contract VerifyActivationTest is Test {
         _verify();
     }
 
+    function test_verify_rejects_paused_queue() public {
+        _makeFullyCorrect();
+        vm.prank(INTENDED_OWNER);
+        queue.setSecurityPerimeterPaused(true);
+        vm.expectRevert(bytes("queue is paused -- unpause before enabling the perimeter (step 8)"));
+        _verify();
+    }
+
     // ─── (b) floor: distinct "not yet configured" vs sub-floor ─────────
 
     function test_verify_reverts_distinctly_when_global_delay_unconfigured() public {
@@ -237,9 +245,7 @@ contract VerifyActivationTest is Test {
         vm.prank(DEPLOYER);
         queue.acceptOwnership();
 
-        vm.expectRevert(
-            bytes("C1: queue.owner() == deployer EOA -- ownership not handed to the Owner")
-        );
+        vm.expectRevert(bytes("C1: queue.owner() == deployer EOA -- ownership not handed to the Owner"));
         _verify();
     }
 
@@ -257,11 +263,7 @@ contract VerifyActivationTest is Test {
         vm.prank(DEPLOYER);
         controller.acceptOwnership();
 
-        vm.expectRevert(
-            bytes(
-                "C1: controller.owner() == deployer EOA -- ownership not handed to the Owner"
-            )
-        );
+        vm.expectRevert(bytes("C1: controller.owner() == deployer EOA -- ownership not handed to the Owner"));
         _verify();
     }
 
@@ -306,11 +308,7 @@ contract VerifyActivationTest is Test {
     /// C1 arg hygiene: a zero intended-Owner arg is a config error, not a pass.
     function test_verify_reverts_when_intended_owner_arg_zero() public {
         _makeFullyCorrect();
-        vm.expectRevert(
-            bytes(
-                "C1: the intended Owner arg == 0 -- set EXIT_DELAY_OWNER"
-            )
-        );
+        vm.expectRevert(bytes("C1: the intended Owner arg == 0 -- set EXIT_DELAY_OWNER"));
         script.verify(controller, queue, address(0), DEPLOYER, _hosts(), false);
     }
 
@@ -322,9 +320,7 @@ contract VerifyActivationTest is Test {
 
     function test_verify_reverts_when_intended_owner_equals_deployer() public {
         _makeFullyCorrect();
-        vm.expectRevert(
-            bytes("C1: the intended Owner == deployer -- they must differ")
-        );
+        vm.expectRevert(bytes("C1: the intended Owner == deployer -- they must differ"));
         script.verify(controller, queue, INTENDED_OWNER, INTENDED_OWNER, _hosts(), false);
     }
 
@@ -481,9 +477,7 @@ contract VerifyActivationTest is Test {
     /// twice while the OTHER ships silently unchecked/unwired. Applies regardless of
     /// deferHosts (the check runs BEFORE the include/defer logic).
     function test_resolveHosts_reverts_on_duplicate_nonzero_hosts() public {
-        vm.expectRevert(
-            bytes("C1: SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)")
-        );
+        vm.expectRevert(bytes("C1: SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)"));
         script.resolveHosts(false, SOVRYN_HOST, SOVRYN_HOST);
     }
 
@@ -491,9 +485,7 @@ contract VerifyActivationTest is Test {
     /// pair is a genuine NON-ZERO duplicate — deferral excuses a ZERO host, never a
     /// copy-paste of the same real address into both slots.
     function test_resolveHosts_reverts_on_duplicate_nonzero_hosts_even_when_deferred() public {
-        vm.expectRevert(
-            bytes("C1: SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)")
-        );
+        vm.expectRevert(bytes("C1: SOVRYN_PROTOCOL_HOST == ZERO_BORROWER_OPERATIONS_HOST (duplicate host)"));
         script.resolveHosts(true, ZERO_HOST, ZERO_HOST);
     }
 
@@ -518,9 +510,7 @@ contract VerifyActivationTest is Test {
         _makeFullyCorrect();
         address[] memory empty = new address[](0);
         vm.expectRevert(
-            bytes(
-                "empty intended-host list without VERIFY_DEFER_HOSTS=true -- refusing vacuous wiring PASS"
-            )
+            bytes("empty intended-host list without VERIFY_DEFER_HOSTS=true -- refusing vacuous wiring PASS")
         );
         script.verify(controller, queue, INTENDED_OWNER, DEPLOYER, empty, false);
     }
@@ -745,14 +735,18 @@ contract VerifyActivationTest is Test {
         address[] memory raw = new address[](2);
         raw[0] = SOVRYN_HOST;
         raw[1] = address(0);
-        vm.expectRevert(bytes("C1: QUEUE_ALLOWED_SOURCES carries a zero entry -- a blank in the list is a typo"));
+        vm.expectRevert(
+            bytes("C1: QUEUE_ALLOWED_SOURCES carries a zero entry -- a blank in the list is a typo")
+        );
         script.resolveRecordingHosts(false, raw);
     }
 
     function test_resolveRecordingHosts_reverts_on_zero_entry_even_when_deferring() public {
         address[] memory raw = new address[](1);
         raw[0] = address(0);
-        vm.expectRevert(bytes("C1: QUEUE_ALLOWED_SOURCES carries a zero entry -- a blank in the list is a typo"));
+        vm.expectRevert(
+            bytes("C1: QUEUE_ALLOWED_SOURCES carries a zero entry -- a blank in the list is a typo")
+        );
         script.resolveRecordingHosts(true, raw);
     }
 
