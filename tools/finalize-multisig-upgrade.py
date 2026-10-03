@@ -419,7 +419,8 @@ def finalize(args):
         require(record_path.read_bytes() == current_raw, 'deployment record changed during finalization')
         if already:
             for key in ['contractName', 'chainId', 'proxyAddress', 'implAddress', 'implBytecodeHash',
-                        'deploymentBlock', 'deploymentTx', 'implementationDeploymentTx', 'gitSha', 'abi', 'storageLayout']:
+                        'deploymentBlock', 'deploymentTx', 'implementationDeploymentTx', 'timestamp',
+                        'timestampUnit', 'gitSha', 'abi', 'storageLayout']:
                 require(current.get(key) == result[key], 'conflicting previously finalized record')
             saved_proof, verified_proof = json.loads(json.dumps(current['finalization'])), json.loads(json.dumps(result['finalization']))
             for proof in [saved_proof, verified_proof]:

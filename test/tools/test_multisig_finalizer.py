@@ -273,6 +273,24 @@ class MultisigFinalizerTest(unittest.TestCase):
         self.assertIn('conflicting previously finalized receipt/provenance', result.stdout)
         self.assertEqual(self.record.read_bytes(), tampered)
 
+    def test_tampered_timestamp_replay_is_refused_without_changing_record(self):
+        result = self.run_finalizer()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        saved = json.loads(self.record.read_text())
+        self.assertEqual(saved['timestamp'], 1800000100000)
+        self.assertEqual(saved['timestampUnit'], 'milliseconds')
+        for changes in [{'timestamp': 0}, {'timestampUnit': 'seconds'},
+                        {'timestamp': 0, 'timestampUnit': 'seconds'}]:
+            with self.subTest(changes=changes):
+                corrupted = copy.deepcopy(saved)
+                corrupted.update(changes)
+                self.record.write_text(json.dumps(corrupted))
+                tampered = self.record.read_bytes()
+                result = self.run_finalizer()
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('conflicting previously finalized record', result.stdout)
+                self.assertEqual(self.record.read_bytes(), tampered)
+
 
 class VerificationProfileTest(unittest.TestCase):
     def setUp(self):
