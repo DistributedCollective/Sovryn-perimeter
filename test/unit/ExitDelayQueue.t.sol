@@ -1621,11 +1621,11 @@ contract ExitDelayQueueTest is Test {
         assertEq(ALT.balance, altBefore, "alternate untouched");
     }
 
-    /// @notice The measurement behind the caller-supplied budget: with a receiver
-    ///         that consumes every unit it is given, the smallest gas limit at which
-    ///         recovery still pays the alternate out of the EVM's retained 1/64, on
-    ///         both the native and the ERC20 path. Logged, and pinned under the
-    ///         block limit.
+    /// @notice Samples the first successful nested queue-call budget in ascending
+    ///         limits for native gas-sink and ordinary MockERC20 requests. MockERC20
+    ///         transfers do not invoke the receiver's native receive function; this
+    ///         sampler checks call success, not the payee. These samples establish
+    ///         neither an exact minimum nor a live-chain block gas limit.
     function test_recover_gas_sink_minimum_limit_measured() public {
         uint256[] memory limits = new uint256[](9);
         limits[0] = 400_000; limits[1] = 600_000; limits[2] = 800_000; limits[3] = 1_000_000;
@@ -1641,10 +1641,10 @@ contract ExitDelayQueueTest is Test {
             vm.prank(OWNR);
             try queue.recoverStuckExit{gas: limits[i]}(idE, ALT) { if (minErc20 == 0) minErc20 = limits[i]; } catch {}
         }
-        emit log_named_uint("smallest gas limit that recovers past a gas-sink receiver, native", minNative);
-        emit log_named_uint("smallest gas limit that recovers past a gas-sink receiver, erc20", minErc20);
-        assertTrue(minNative != 0 && minNative <= 6_800_000, "native recovery fits under the block limit");
-        assertTrue(minErc20 != 0 && minErc20 <= 6_800_000, "erc20 recovery fits under the block limit");
+        emit log_named_uint("first successful sampled nested queue-call budget, native", minNative);
+        emit log_named_uint("first successful sampled nested queue-call budget, MockERC20", minErc20);
+        assertTrue(minNative != 0 && minNative <= 6_800_000, "native call succeeds within sampled budgets");
+        assertTrue(minErc20 != 0 && minErc20 <= 6_800_000, "MockERC20 call succeeds within sampled budgets");
     }
 
     /// @notice resolveByOwner rejects a destination that would trap or swallow the
@@ -1771,9 +1771,9 @@ contract ExitDelayQueueTest is Test {
         );
     }
 
-    /// @notice (b) HEALTHY original receiver → recoverStuckExit pays the STORED
-    ///         receiver; altReceiver is IGNORED (proves no arbitrary redirect —
-    ///         a healthy exit can never be diverted, verify-by-attempting).
+    /// @notice (b) This MockERC20 payment succeeds to the stored receiver using the
+    ///         supplied harness gas, leaving altReceiver unpaid in this case. This
+    ///         does not establish general immunity to recovery redirection.
     function test_recover_healthy_original_pays_stored_receiver_alt_ignored() public {
         uint128 amount = 100 ether;
         _queueErc20(amount); // stored receiver = RCVR (healthy, no code)
@@ -1790,7 +1790,7 @@ contract ExitDelayQueueTest is Test {
         queue.recoverStuckExit(1, ALT);
 
         assertEq(token.balanceOf(RCVR), rcvrBefore + amount, "stored receiver paid");
-        assertEq(token.balanceOf(ALT), altBefore, "altReceiver ignored on a healthy exit");
+        assertEq(token.balanceOf(ALT), altBefore, "altReceiver unpaid after stored ERC20 payment");
         assertEq(uint256(queue.getRequest(1).status), uint256(IExitDelayQueue.ExitStatus.Executed));
         assertEq(queue.totalEscrowed(address(token)), 0);
     }
