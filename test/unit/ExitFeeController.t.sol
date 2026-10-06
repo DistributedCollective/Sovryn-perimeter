@@ -1088,7 +1088,7 @@ contract ExitFeeControllerTest is Test {
 
     function test_globalDelay_only_owner() public {
         vm.prank(GUARDIAN); // guardian is NOT owner; global delay is owner-only
-        vm.expectRevert();
+        vm.expectRevert(bytes("Ownable: caller is not the owner"));
         controller.setGlobalDelaySeconds(DELAY);
     }
 

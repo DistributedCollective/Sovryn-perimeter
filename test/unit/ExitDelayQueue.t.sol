@@ -1532,7 +1532,7 @@ contract ExitDelayQueueTest is Test {
         uint256[] memory ids = new uint256[](1);
         ids[0] = 1;
         vm.prank(ADMIN); // admin cannot Leg-3
-        vm.expectRevert();
+        vm.expectRevert(bytes("Ownable: caller is not the owner"));
         queue.resolveByOwner(ids, address(0x7EEA));
     }
 
@@ -2161,7 +2161,7 @@ contract ExitDelayQueueTest is Test {
 
     function test_sweepSurplus_only_owner() public {
         vm.prank(ADMIN);
-        vm.expectRevert();
+        vm.expectRevert(bytes("Ownable: caller is not the owner"));
         queue.sweepSurplus(address(token), ADMIN);
     }
 
@@ -2246,7 +2246,7 @@ contract ExitDelayQueueTest is Test {
 
     function test_addAllowedSource_only_owner() public {
         vm.prank(OUTSIDER);
-        vm.expectRevert();
+        vm.expectRevert(bytes("Ownable: caller is not the owner"));
         queue.addAllowedSource(OUTSIDER);
     }
 
