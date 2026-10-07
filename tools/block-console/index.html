@@ -131,6 +131,11 @@
     </div>
     <div class="strip" id="strip"></div>
     <div class="err" id="connErr"></div>
+    <div class="card warn" id="partialRead" role="alert" hidden>
+      <b>Partial address read.</b> More matching requests remain for:
+      <span class="mono" id="partialAddresses"></span>.
+      The list is incomplete; generated calldata covers only your selected shown requests.
+    </div>
   </header>
 
   <div class="tabs" role="tablist">
@@ -442,6 +447,7 @@ async function loadContext() {
 
 async function idsForAddresses(addrs) {
   const out = new Set();
+  const cappedAddresses = [];
   for (const a of addrs) {
     let cursor = 0n;
     for (let guard = 0; guard < 40; guard++) {
@@ -452,11 +458,12 @@ async function idsForAddresses(addrs) {
       const off = Number(toNum(wordAt(res, 0))) / 32;
       const len = Number(toNum(wordAt(res, off)));
       for (let i = 0; i < len; i++) out.add(Number(toNum(wordAt(res, off + 1 + i))));
+      if (guard === 39 && next !== 0n) cappedAddresses.push(a);
       if (next === 0n) break;
       cursor = next;
     }
   }
-  return [...out].sort((x, y) => x - y);
+  return { ids: [...out].sort((x, y) => x - y), cappedAddresses };
 }
 
 async function loadRequests() {
@@ -465,9 +472,12 @@ async function loadRequests() {
   for (const a of addrs) if (!isAddr(a)) throw new Error("Not a valid address: " + a);
 
   let ids;
+  let cappedAddresses = [];
   if (addrs.length) {
-    // Filtering by party uses the queue's own index, so it stays exact and cheap.
-    ids = await idsForAddresses(addrs);
+    // Filtering uses the queue's own index and reports capped address reads.
+    const result = await idsForAddresses(addrs);
+    ids = result.ids;
+    cappedAddresses = result.cappedAddresses;
   } else {
     ids = Array.from({ length: CTX.last }, (_, i) => i + 1);
   }
@@ -497,6 +507,8 @@ async function loadRequests() {
     }));
   }
   for (const id of [...SELECTED]) if (!ROWS.some((r) => r.id === id)) SELECTED.delete(id);
+  $("partialRead").hidden = cappedAddresses.length === 0;
+  $("partialAddresses").textContent = cappedAddresses.join(", ");
   render();
 }
 
