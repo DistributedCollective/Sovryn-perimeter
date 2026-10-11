@@ -274,6 +274,13 @@ def finalize(args):
             and previous['proxyAddress'].lower() == proxy, 'previous record target/chain mismatch')
     old_impl = address(previous['implAddress'])
     require(old_impl != implementation, 'implementation did not change')
+    # If finalize-deployment.sh staged an impl-only broadcast (03_ on a
+    # live-proxy chain), the manifest must promote exactly that staged impl;
+    # the staged record is cleared from the finalized artifact below.
+    pending = previous.get('pendingImplementation')
+    if pending is not None:
+        require(address(pending['implAddress']) == implementation,
+                'manifest implementation does not match staged pendingImplementation')
     artifact_path, artifact_raw, artifact = checked_file(spec['artifact'], base)
     _, profile_raw, profile = checked_file(spec['profile'], base)
     entries = [c for c in profile['contracts'] if c['contract'] == spec['contractName']]
@@ -395,6 +402,8 @@ def finalize(args):
               'implementationDeploymentTx': creation_hash, 'timestamp': timestamp * 1000,
               'timestampUnit': 'milliseconds', 'gitSha': profile['source_pin'],
               'abi': artifact['abi'], 'storageLayout': artifact['storageLayout']}
+    # The staged impl is now live: consume pendingImplementation.
+    result.pop('pendingImplementation', None)
     result['finalization'] = {
         'schemaVersion': 1, 'mode': 'multisig-upgrade', 'manifestSha256': args.manifest_sha256,
         'executedAtUtc': datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
