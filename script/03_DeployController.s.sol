@@ -45,6 +45,14 @@ contract DeployController is Script {
     ///      EXCHEQUER_MULTISIG is not set; the hint is marked UNVERIFIED.
     address internal constant KNOWN_MAINNET_EXCHEQUER = 0x924f5ad34698Fd20c90Fe5D5A8A0abd3b42dc711;
 
+    /// @dev Bitocracy governance timelocks on RSK mainnet (chain 30), from the
+    ///      Sovryn-smart-contracts hardhat deployment data
+    ///      (deployment/deployments/rskSovrynMainnet/TimelockAdmin.json and
+    ///      TimelockOwner.json). Used ONLY as printed hints identifying the
+    ///      proxy owner; the hints are marked UNVERIFIED.
+    address internal constant KNOWN_MAINNET_TIMELOCK_ADMIN = 0x6c94c8aa97C08fC31fb06fbFDa90e1E09529FB13;
+    address internal constant KNOWN_MAINNET_TIMELOCK_OWNER = 0x967c84b731679E36A344002b8E3CE50620A7F69f;
+
     function run() external returns (address proxy, address impl) {
         // The initial owner is baked into the proxy's initialize() calldata, so
         // it becomes permanent on-chain state and must be the account that
@@ -154,6 +162,16 @@ contract DeployController is Script {
             console2.log("  EXCHEQUER_MULTISIG is not set, so this is a hard-coded hint, not a");
             console2.log("  confirmed identity). => Completing this upgrade requires a 3-of-7 multisig");
             console2.log("     upgradeTo(newImpl) transaction from the Exchequer wallet (runbook 5.2).");
+        } else if (block.chainid == 30 && currentOwner == KNOWN_MAINNET_TIMELOCK_OWNER) {
+            console2.log("  Owner matches the known mainnet Bitocracy TimelockOwner");
+            console2.log("  0x967c84b7...A7F69f (Sovryn-smart-contracts rskSovrynMainnet deployment");
+            console2.log("  data; UNVERIFIED hint). => Completing this upgrade requires a GovernorOwner");
+            console2.log("     SIP executing upgradeTo(newImpl) through the timelock.");
+        } else if (block.chainid == 30 && currentOwner == KNOWN_MAINNET_TIMELOCK_ADMIN) {
+            console2.log("  Owner matches the known mainnet Bitocracy TimelockAdmin");
+            console2.log("  0x6c94c8aa...29FB13 (Sovryn-smart-contracts rskSovrynMainnet deployment");
+            console2.log("  data; UNVERIFIED hint). => Completing this upgrade requires a GovernorAdmin");
+            console2.log("     SIP executing upgradeTo(newImpl) through the timelock.");
         } else {
             // Do NOT guess silently: print both candidate paths.
             console2.log("  Owner is NOT confirmed as the Exchequer multisig. Determine the upgrade");
