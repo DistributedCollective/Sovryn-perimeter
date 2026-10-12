@@ -1281,5 +1281,13 @@
         "numberOfBytes": "1"
       }
     }
+  },
+  "pendingImplementation": {
+    "implAddress": "0xe85e7e5c81a4dcafa6976cd57988b81dbfcb18e1",
+    "implBytecodeHash": "0x98d18b9f5a53aa6b2d211241a6e5a1888f00c37be3e9ea9f2c79151eb5a9eaf2",
+    "deploymentBlock": 9317153,
+    "deploymentTx": "0xcc1bcce36c751a1c1749ea25c0679bd9936d37446f2d1f5d8aa41355a3c2ee50",
+    "timestamp": 1791763244215,
+    "gitSha": "b51106f"
   }
 }
