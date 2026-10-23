@@ -30,7 +30,7 @@ their own trees. Product-side hooks live in the home repos:
 
 ```
 src/
-├── ExitFeeController.sol       # UUPS-upgradeable, governance-owned policy resolver
+├── ExitFeeController.sol       # UUPS-upgradeable, Owner-controlled policy resolver
 ├── ExitFeeVault.sol            # UUPS-upgradeable, passive holder (sweep API)
 └── interfaces/
     ├── IExitFeeController.sol  # range pragma >=0.5.17 <0.9.0 (unified across home repos)
@@ -73,7 +73,7 @@ git submodule update --init --recursive
 
 `ExitFeeController` resolves a per-call fee from a three-tier `RatePolicy` lookup (actor → sub-product → surface) for a given `(surfaceId, subProduct, actor, grossAmount)`. The view-only `quoteExitFee(...)` never reverts on policy lookups — it returns an `ExitFeeQuote` with `(active, rateBps, feeAmount, netAmount, feeReceiver, reason)`. Product-side hooks call this from each home repo's existing user-payout call site via a local `_safeQuote` helper, and on a positive quote split the user payout via the family's existing transfer primitive (`_safeTransfer`, `vaultEtherWithdraw`, `activePool.sendETH`, etc.). The fee leg goes to `feeReceiver` (set to the deployed `ExitFeeVault` proxy); the user leg uses the family's existing fail-closed behavior. The controller never moves tokens.
 
-`ExitFeeVault` is a passive holder. It accepts ERC20 transfers and native RBTC via `receive()`. The only way out is `sweepERC20` or `sweepRBTC`, callable by either the proxy owner or the configured operational `admin`; both authorities can use an explicit recipient, and both can rotate `defaultRecipient`. On the controller, the operational admin can toggle `exitFeeEnabled` and rotate `feeReceiver`, while policy writes, admin rotation, and UUPS upgrades remain owner-only. Production ownership is intended for the designated governance multisig — on RSK mainnet the Exchequer Multisig, which also holds the operational admin role at launch; `renounceOwnership` is overridden to revert on both contracts so an accidental call cannot brick owner-only administration and upgrades.
+`ExitFeeVault` is a passive holder. It accepts ERC20 transfers and native RBTC via `receive()`. The only way out is `sweepERC20` or `sweepRBTC`, callable by either the proxy owner or the configured operational `admin`; both authorities can use an explicit recipient, and both can rotate `defaultRecipient`. On the controller, the operational admin can toggle `exitFeeEnabled` and rotate `feeReceiver`, while policy writes, admin rotation, and UUPS upgrades remain owner-only. Production ownership is intended for the designated multisig — on RSK mainnet the Exchequer Multisig, which also holds the operational admin role at launch; `renounceOwnership` is overridden to revert on both contracts so an accidental call cannot brick owner-only administration and upgrades.
 
 ---
 
@@ -105,7 +105,7 @@ export EXIT_FEE_OPERATIONAL_ADMIN=<operational-admin-address>
 Deploy + finalize each contract (`--account deployer` prompts for the keystore password):
 
 ```bash
-# 1) Vault deploy. Initial owner = the deployer wallet (NOT the governance Safe).
+# 1) Vault deploy. Initial owner = the deployer wallet (NOT the Owner).
 #    The deployer retains owner power for the vault bootstrap phase; ownership
 #    is handed off to the Safe in step 2.
 forge script script/01_DeployVault.s.sol --rpc-url $RSK_RPC --broadcast --account deployer
@@ -118,7 +118,7 @@ tools/verify-deployment.sh ExitFeeVault 01_DeployVault <chainId>
 
 # 2) Vault bootstrap: set defaultRecipient, appoint the operational admin,
 #    then queue the Ownable2Step handoff to EXIT_FEE_VAULT_ADMIN (the
-#    governance Safe). Every input is REQUIRED — the script reverts on a
+#    Owner). Every input is REQUIRED — the script reverts on a
 #    missing one instead of inferring a default. "The Safe sweeps to itself"
 #    is a common shape, but it is stated, not assumed.
 export EXIT_FEE_VAULT_RECIPIENT=<recipient address>
@@ -133,7 +133,7 @@ tools/verify-deployment.sh ExitFeeController 03_DeployController <chainId>
 
 # 4) Controller bootstrap: configure + (optionally) activate, appoint the
 #    operational admin, then queue the Ownable2Step handoff to
-#    EXIT_FEE_CONTROLLER_ADMIN (the governance Safe).
+#    EXIT_FEE_CONTROLLER_ADMIN (the Owner).
 export EXIT_FEE_VAULT_PROXY=<vault proxy from step 1>
 # Rates for the four surfaces that ship ON. All REQUIRED — a missing one reverts
 # the script rather than shipping a rate nobody chose. 0 does NOT mean "skip":
@@ -146,15 +146,15 @@ export PERIMETER_ZERO_CLAIM_SURPLUS_BPS=<bps>
 # var: the script writes it as (active=false, 0). Turning it on later is a single
 # setSurfacePolicy call from the owner.
 # MAINNET: keep this false. Enabling at deploy would turn the
-# system on while the deployer EOA still owns the proxies — enable via the governance
-# Safe only after the ownership handoff and the release gates in SIP-0094.
+# system on while the deployer EOA still owns the proxies — enable via the Owner
+# only after the ownership handoff and the release gates in SIP-0094.
 # =true is for local/test chains only.
 export PERIMETER_ENABLE_AT_DEPLOY=false
 forge script script/04_BootstrapController.s.sol \
     --rpc-url $RSK_RPC --broadcast --account deployer \
     --sig "run(uint256)" <chainId>
 
-# 5) Final step (governance Safe): call acceptOwnership() on BOTH proxies in
+# 5) Final step (Owner): call acceptOwnership() on BOTH proxies in
 #    follow-up Safe transactions to complete the Ownable2Step handoffs:
 #      vault.acceptOwnership()
 #      controller.acceptOwnership()
@@ -193,7 +193,7 @@ The controller deploys in safe defaults: `exitFeeEnabled = false`, no `feeReceiv
 
 ## Upgrade flow
 
-The Perimeter Fee proxies are UUPS-upgradeable. Only the proxy owner (governance Safe / TimelockOwner) can authorize an upgrade. The flow:
+The Perimeter Fee proxies are UUPS-upgradeable. Only the proxy owner (multisig / TimelockOwner) can authorize an upgrade. The flow:
 
 1. **Build + audit the new impl** on `feat/<change>` or release branch.
 2. **Deploy the new impl** on-chain (it becomes a candidate; the proxy still points at the active impl). Note its address — call it `$NEW_IMPL`.
@@ -237,7 +237,7 @@ The Perimeter Fee proxies are UUPS-upgradeable. Only the proxy owner (governance
    The verify step publishes the new implementation's source on the Rootstock
    Blockscout explorer (the proxy stays verified from its initial deploy).
 
-   The current finalizer reads the local `99_UpgradeProxy` Foundry broadcast log. It cannot ingest a Safe/Timelock execution receipt. For a contract-owned production proxy, the release process must capture the governance transaction and refresh the artifact through a reviewed Safe-aware process before treating it as the next upgrade baseline.
+   The current finalizer reads the local `99_UpgradeProxy` Foundry broadcast log. It cannot ingest a Safe/Timelock execution receipt. For a contract-owned production proxy, the release process must capture the Owner's transaction and refresh the artifact through a reviewed Safe-aware process before treating it as the next upgrade baseline.
 
 6. **Commit the updated `deployments/<chainId>/<Contract>.json`**.
 
@@ -280,7 +280,7 @@ When the interface changes here, each home repo re-copies its respective file (w
 - **Custom errors over revert strings**: gas-efficient and IDE-greppable.
 - **`renounceOwnership` is disabled** on both contracts to prevent admin lockout.
 - **`nonReentrant` ordered before the access modifier** (`onlyOwner` / `onlyAdminOrOwner`): engages first, blocks reentrancy through any subsequent modifier.
-- **Aderyn**: static-analysis config in [`aderyn.toml`](aderyn.toml). Project-level exclusions cover by-design patterns (`centralization-risk` on governance setters, `costly-loop` / `require-revert-in-loop` on batch policy setters).
+- **Aderyn**: static-analysis config in [`aderyn.toml`](aderyn.toml). Project-level exclusions cover by-design patterns (`centralization-risk` on Owner-gated setters, `costly-loop` / `require-revert-in-loop` on batch policy setters).
 
 ---
 
@@ -296,3 +296,91 @@ When the interface changes here, each home repo re-copies its respective file (w
 ## License
 
 MIT. See [LICENSE](LICENSE).
+# Finalize an upgrade executed by a multisig
+
+The direct `99_UpgradeProxy` finalization path requires a real Foundry broadcast.
+For a controller owned by the existing 3-of-7 `MultiSigWallet`, use the separate
+receipt-backed mode after the wallet has executed the upgrade:
+
+```sh
+tools/finalize-deployment.sh --multisig-upgrade \
+  --manifest /absolute/path/upgrade-manifest.json \
+  --manifest-sha256 <sha256-of-that-file> \
+  --rpc-url <explicit-read-only-RPC>
+```
+
+This makes only RPC reads and atomically updates the explicitly bound existing
+deployment record. It requires the real implementation creation transaction and
+the actual wallet `confirmTransaction` or `executeTransaction` receipt; it does
+not create a `99_UpgradeProxy` broadcast. Mine submissions/confirmations separately
+in fork tests: the before-state anchor is the parent of the execution block.
+Historical RPC state is required. Canonical hashes are rechecked; production
+finality depth remains an operator requirement.
+
+Manifest version 1 (replace every placeholder with reviewed chain evidence):
+
+```json
+{
+  "schemaVersion": 1,
+  "contractName": "ExitFeeController",
+  "chainId": 30,
+  "proxyAddress": "0x...",
+  "implementationAddress": "0x...",
+  "implementationDeploymentTx": "0x...",
+  "proxyRuntimeCodeHash": "0x...",
+  "wallet": {
+    "address": "0x...",
+    "transactionId": 123,
+    "executionTx": "0x...",
+    "required": 3,
+    "owners": ["0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x..."],
+    "runtimeCodeHash": "0x..."
+  },
+  "previousRecord": {"path": "deployments/30/ExitFeeController.json", "sha256": "..."},
+  "artifact": {"path": "/absolute/path/ExitFeeController.json", "sha256": "..."},
+  "profile": {"path": "/absolute/path/PROVENANCE.json", "sha256": "..."},
+  "expectedState": {
+    "owner": "0x...",
+    "pendingOwner": "0x0000000000000000000000000000000000000000",
+    "admin": "0x...",
+    "feeReceiver": "0x...",
+    "exitFeeEnabled": true
+  },
+  "extraSurfaceIds": []
+}
+```
+
+Paths are absolute or relative to the manifest directory. The record path must
+already exist; its exact SHA256, chain, proxy and rollback implementation are
+checked. The reviewed profile uses the readiness `PROVENANCE.json` shape:
+`source_pin`, a controller entry under `contracts` with artifact SHA256, compiler,
+optimizer, EVM, runtime-template keccak and immutable references, and a successful
+controller entry under `native_compiler_replay.checks`. The supported profile is
+Solc 0.8.20, Paris, optimizer 200, no viaIR, IPFS metadata. Its five UUPS self-address
+references are hydrated exactly; every other runtime byte, including metadata,
+must match chain code. A profile hash binds a reviewed compiler proof; it does
+not replace independent source/compiler verification.
+
+The tool checks seven owners, quorum and executed wallet state, exact zero-value
+`upgradeTo(address)` intent, ordered wallet/proxy logs in the same receipt, old
+and new implementation slots/code, owners, fee configuration and layout. It
+preserves all old non-gap storage words and policies/indexes under the five
+canonical fee surfaces plus declared extra IDs. Declare arbitrary existing
+surface IDs explicitly; the tool cannot discover unenumerable mapping keys.
+
+The record retains existing consumer fields. `deploymentTx` is the real wallet
+execution transaction; `implementationDeploymentTx` is separate. `finalization`
+contains real receipts/transactions, block anchors, quorum, reviewed hashes,
+preserved-state coverage and the exact prior record for rollback. Timestamp
+milliseconds remain compatible with existing records, with an explicit unit
+and UTC labels. Conflicts/reorgs/failures leave the record unchanged; an identical
+verified replay is a no-op.
+
+For explorer source verification, use the receipt-backed sentinel and supply
+the exact reviewed artifact. This checks current source hashes and compiler
+settings before submitting sources, and does not require a fake broadcast:
+
+```sh
+VERIFY_BUILD_ARTIFACT=/absolute/path/ExitFeeController.json \
+  tools/verify-deployment.sh ExitFeeController multisig-upgrade 30
+```

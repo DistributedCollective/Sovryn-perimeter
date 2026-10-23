@@ -76,7 +76,32 @@ if [ ! -f "$DEPLOYMENT" ]; then
     echo "       (run tools/finalize-deployment.sh first)" >&2
     exit 2
 fi
-if [ ! -f "$BROADCAST" ]; then
+IS_MULTISIG_UPGRADE=false
+if [ "$SCRIPT_BASE" = "multisig-upgrade" ]; then
+    if ! jq -e --argjson chain "$CHAIN_ID" --arg name "$CONTRACT" '
+        .contractName == $name and .chainId == $chain
+        and .finalization.mode == "multisig-upgrade"
+        and .finalization.executionReceipt.transactionHash == .deploymentTx
+        and .finalization.executionReceipt.status == "0x1"
+        and .finalization.wallet.transaction.executed == true
+        and .finalization.wallet.transaction.destination == .proxyAddress
+    ' "$DEPLOYMENT" > /dev/null; then
+        echo "error: deployment record has no matching finalized multisig execution proof" >&2
+        exit 1
+    fi
+    REVIEWED_BUILD="${VERIFY_BUILD_ARTIFACT:-out/${CONTRACT}.sol/${CONTRACT}.json}"
+    if [ ! -f "$REVIEWED_BUILD" ]; then
+        echo "error: reviewed build artifact missing; set VERIFY_BUILD_ARTIFACT explicitly" >&2
+        exit 2
+    fi
+    REVIEWED_SHA=$(shasum -a 256 "$REVIEWED_BUILD" | awk '{print $1}')
+    if [ "$REVIEWED_SHA" != "$(jq -r '.finalization.profile.artifactSha256' "$DEPLOYMENT")" ]; then
+        echo "error: current build artifact differs from finalized multisig artifact profile" >&2
+        exit 1
+    fi
+    python3 tools/finalize-multisig-upgrade.py --verify-profile --record "$DEPLOYMENT" --artifact "$REVIEWED_BUILD"
+    IS_MULTISIG_UPGRADE=true
+elif [ ! -f "$BROADCAST" ]; then
     echo "error: broadcast log not found at $BROADCAST" >&2
     echo "       (did you forge script ... --broadcast first?)" >&2
     exit 2
@@ -113,7 +138,19 @@ verify_one() {
     fi
 }
 
-verify_one "$IMPL_ADDR" "$SRC_PATH"
+if [ "$IS_MULTISIG_UPGRADE" = "true" ]; then
+    verify_one "$IMPL_ADDR" "$SRC_PATH" \
+        --compiler-version "$(jq -r '.finalization.profile.compiler' "$DEPLOYMENT")" \
+        --num-of-optimizations "$(jq -r '.finalization.profile.optimizer.runs' "$DEPLOYMENT")" \
+        --evm-version "$(jq -r '.finalization.profile.evmVersion' "$DEPLOYMENT")"
+else
+    verify_one "$IMPL_ADDR" "$SRC_PATH"
+fi
+
+if [ "$IS_MULTISIG_UPGRADE" = "true" ]; then
+    echo "receipt-backed multisig upgrade: implementation verified; proxy remains the recorded existing proxy"
+    exit 0
+fi
 
 # The proxy CREATE only exists in initial-deploy broadcasts (01_/03_).
 # Match by contractAddress instead of ordinal position so a reordered or
