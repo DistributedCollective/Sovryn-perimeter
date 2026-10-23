@@ -49,8 +49,11 @@ jobs:
       # before release) -- running them on every push would make CI take ages at
       # real run counts. Run them locally / in the release gates:
       #   forge test --match-test "(testFuzz_|invariant_)"
+      # The deployed-queue probes require a local Rootstock mainnet fork and
+      # are manual-only too. Run separately against that fork:
+      #   forge test --match-path 'test/doublespend/**' --fork-url http://127.0.0.1:8547 -vv
       - name: forge test (unit only)
-        run: forge test -vv --no-match-test "(testFuzz_|invariant_)"
+        run: forge test -vv --no-match-test "(testFuzz_|invariant_)" --no-match-path 'test/doublespend/**'
 
   abi-equivalence:
     name: ABI equivalence guard
