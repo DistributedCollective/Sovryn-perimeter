@@ -171,6 +171,19 @@ interface IExitDelayQueue {
     ///      the ABI at `uint128` also packs `amount` into `ExitRequest` word 1
     ///       — widening would cost a whole extra storage word per request.
 
+    /// @notice Pull ERC20 escrow from an authorized source and record a delayed withdrawal.
+    /// @dev Requires receipt of exactly `amount`; delay must meet the current floor.
+    ///      Only WRBTC may be marked for unwrapping. Caller must check uint128 bounds before narrowing.
+    /// @param token Escrowed ERC20 token.
+    /// @param amount Nonzero amount to escrow.
+    /// @param delaySeconds Delay in seconds from recording to unlock.
+    /// @param surfaceId Withdrawal surface identifying recovery provenance.
+    /// @param subProduct Originating pool or other sub-product identifying recovery provenance.
+    /// @param effOrig Nonzero withdrawal originator recorded for authorization and blocking.
+    /// @param effOwner Nonzero position owner recorded for authorization and blocking.
+    /// @param receiver Nonzero immutable payout recipient; must be valid for the delivery asset.
+    /// @param unwrapOnDelivery Whether to unwrap escrowed WRBTC to native RBTC on user delivery.
+    /// @return id Newly created request identifier.
     function recordERC20Exit(
         address token,
         uint128 amount,
@@ -183,6 +196,19 @@ interface IExitDelayQueue {
         bool unwrapOnDelivery
     ) external returns (uint256 id);
 
+    /// @notice Record ERC20 escrow already transferred by an authorized source in the same transaction.
+    /// @dev Requires unaccounted token balance of at least `amount`; credits exactly that amount.
+    ///      Excess remains surplus. Delay must meet the current floor; delivery does not unwrap.
+    ///      Caller must check uint128 bounds before narrowing.
+    /// @param token Escrowed ERC20 token.
+    /// @param amount Nonzero amount to escrow.
+    /// @param delaySeconds Delay in seconds from recording to unlock.
+    /// @param surfaceId Withdrawal surface identifying recovery provenance.
+    /// @param subProduct Originating pool or other sub-product identifying recovery provenance.
+    /// @param effOrig Nonzero withdrawal originator recorded for authorization and blocking.
+    /// @param effOwner Nonzero position owner recorded for authorization and blocking.
+    /// @param receiver Nonzero immutable payout recipient; must be valid for the delivery asset.
+    /// @return id Newly created request identifier.
     function recordReceivedERC20Exit(
         address token,
         uint128 amount,
@@ -194,6 +220,17 @@ interface IExitDelayQueue {
         address receiver
     ) external returns (uint256 id);
 
+    /// @notice Record a delayed native-RBTC withdrawal funded by an authorized source's call value.
+    /// @dev Requires `msg.value == amount` and a delay meeting the current floor.
+    ///      Caller must check uint128 bounds before narrowing.
+    /// @param amount Nonzero amount to escrow.
+    /// @param delaySeconds Delay in seconds from recording to unlock.
+    /// @param surfaceId Withdrawal surface identifying recovery provenance.
+    /// @param subProduct Originating pool or other sub-product identifying recovery provenance.
+    /// @param effOrig Nonzero withdrawal originator recorded for authorization and blocking.
+    /// @param effOwner Nonzero position owner recorded for authorization and blocking.
+    /// @param receiver Nonzero immutable payout recipient; must be valid for the delivery asset.
+    /// @return id Newly created request identifier.
     function recordNativeExit(
         uint128 amount,
         uint32 delaySeconds,
@@ -204,6 +241,18 @@ interface IExitDelayQueue {
         address receiver
     ) external payable returns (uint256 id);
 
+    /// @notice Record native RBTC already transferred by an authorized source in the same transaction.
+    /// @dev Requires unaccounted native balance of at least `amount`; credits exactly that amount.
+    ///      Excess remains surplus. Delay must meet the current floor.
+    ///      Caller must check uint128 bounds before narrowing.
+    /// @param amount Nonzero amount to escrow.
+    /// @param delaySeconds Delay in seconds from recording to unlock.
+    /// @param surfaceId Withdrawal surface identifying recovery provenance.
+    /// @param subProduct Originating pool or other sub-product identifying recovery provenance.
+    /// @param effOrig Nonzero withdrawal originator recorded for authorization and blocking.
+    /// @param effOwner Nonzero position owner recorded for authorization and blocking.
+    /// @param receiver Nonzero immutable payout recipient; must be valid for the delivery asset.
+    /// @return id Newly created request identifier.
     function recordReceivedNativeExit(
         uint128 amount,
         uint32 delaySeconds,
@@ -228,6 +277,7 @@ interface IExitDelayQueue {
     ///         Blocking whoever presses deliver does not hold a contract-owned
     ///         request — block a recorded party to hold it. Reverts while the
     ///         queue is paused or the request is still locked.
+    /// @param requestId Queued request to deliver.
     function executeExit(uint256 requestId) external;
 
     /// @notice `executeExit` for several ids in one call, with the same rule
@@ -235,6 +285,8 @@ interface IExitDelayQueue {
     ///         owner has code, never a blocked caller. Atomic: one id that fails
     ///         reverts the whole batch. Blocking whoever presses deliver does not
     ///         hold a contract-owned request — block a recorded party to hold it.
+    /// @dev Rejects an empty batch.
+    /// @param ids Queued requests to deliver.
     function executeExits(uint256[] calldata ids) external;
 
     /// @notice Verify-by-attempting stuck-exit recovery. Callable by the
@@ -265,18 +317,46 @@ interface IExitDelayQueue {
     ///         accept payment with more gas. The EVM keeps 1/64 back from
     ///         the attempt, which is what pays `altReceiver` when the receiver
     ///         consumes everything — so supply enough for both legs.
+    /// @param id Queued request whose stored payout is attempted first.
+    /// @param altReceiver Fallback payout recipient if the stored payout fails.
     function recoverStuckExit(uint256 id, address altReceiver) external;
 
     // ─── Block model ─────────────────────────────────────────────
 
+    /// @notice Freeze a request's originator and owner, optionally its receiver. Admin or Owner only.
+    /// @dev Requires known request ids, including terminal requests. Records request/reason evidence.
+    ///      A freeze preserves an existing blacklist while updating evidence.
+    /// @param requestId Request providing the recorded parties and evidence trigger.
+    /// @param freezeReceiver Whether to block the recorded receiver as well.
+    /// @param reasonHash Hash identifying supporting evidence; emitted in AccountBlocked.
     function freezeFromRequest(uint256 requestId, bool freezeReceiver, bytes32 reasonHash) external;
+
+    /// @notice Blacklist a request's originator and owner, optionally its receiver. Admin or Owner only.
+    /// @dev Requires known request ids, including terminal requests. Records request/reason evidence.
+    /// @param requestId Request providing the recorded parties and evidence trigger.
+    /// @param freezeReceiver Whether to block the recorded receiver as well.
+    /// @param reasonHash Hash identifying supporting evidence; emitted in AccountBlocked.
     function blacklistFromRequest(uint256 requestId, bool freezeReceiver, bytes32 reasonHash) external;
 
     // Batch by-request-id — whole-batch atomic (one bad
     // id reverts all, like executeExits); last-write-wins trigger/reason per
     // address when the same address is blocked by more than one id in the batch.
+    /// @notice Freeze a request's originator and owner, optionally its receiver. Admin or Owner only.
+    /// @dev Requires known request ids, including terminal requests. Records request/reason evidence.
+    ///      A freeze preserves an existing blacklist while updating evidence.
+    ///      Nonempty atomic batch; later requests overwrite evidence for shared parties.
+    /// @param requestIds Request identifiers to process.
+    /// @param freezeReceiver Whether to block the recorded receiver as well.
+    /// @param reasonHash Hash identifying supporting evidence; emitted in AccountBlocked.
     function freezeFromRequest(uint256[] calldata requestIds, bool freezeReceiver, bytes32 reasonHash)
         external;
+
+    /// @notice Blacklist a request's originator and owner, optionally its receiver. Admin or Owner only.
+    /// @dev Requires known request ids, including terminal requests. Records request/reason evidence.
+    ///      Nonempty atomic batch; later requests overwrite evidence for shared parties.
+    /// @param requestIds Request identifiers to process.
+    /// @param freezeReceiver Whether to block the recorded receiver as well.
+    /// @param reasonHash Hash identifying supporting evidence; emitted in AccountBlocked.
     function blacklistFromRequest(uint256[] calldata requestIds, bool freezeReceiver, bytes32 reasonHash)
         external;
 
@@ -287,9 +367,21 @@ interface IExitDelayQueue {
     ///         by-request levers above carry a trigger and a reason, so they stay
     ///         unconditional on a known id — over a Blacklisted party they hold the
     ///         stronger state, record the new evidence, and announce Blacklisted.
+    /// @dev Admin or Owner only; rejects zero and retains existing request triggers.
+    /// @param a Address to freeze.
     function freeze(address a) external;
+
+    /// @notice Blacklist an address, escalating an existing freeze. Admin or Owner only.
+    /// @dev Rejects zero addresses and preserves existing request triggers.
+    /// @param a Address to process.
     function blacklist(address a) external;
+
+    /// @notice Clear Frozen blocks; other starting states revert. Admin or Owner only.
+    /// @param a Address to process.
     function unfreeze(address a) external;
+
+    /// @notice Clear Blacklisted blocks; other starting states revert. Admin or Owner only.
+    /// @param a Address to process.
     function unblacklist(address a) external;
 
     /// @notice Move a Blacklisted address down to Frozen in one call — the
@@ -298,16 +390,39 @@ interface IExitDelayQueue {
     ///         unblocked, unlike unblacklist-then-freeze. Reverts `NotBlacklisted`
     ///         on any other state; the recorded trigger is kept, because a
     ///         downgrade means "still under investigation", not "exonerated".
+    /// @dev Admin or Owner only; rejects zero.
+    /// @param a Blacklisted address to keep frozen.
     function downgradeToFrozen(address a) external;
 
     // Batch by-address: each reverts `EmptyIds()` on
     // an empty array, for API consistency with the by-id batch variants
     // (`executeExits` / batch `freezeFromRequest` / `resolveToProtocol` /
     // `resolveByOwner`) — an empty batch is a caller mistake, never a silent no-op.
+    /// @notice Freeze addresses; rejects any Blacklisted address. Admin or Owner only.
+    /// @dev Nonempty atomic batch; one invalid entry reverts the whole call.
+    ///      Rejects zero addresses and preserves existing request triggers.
+    /// @param a Addresses to process.
     function freeze(address[] calldata a) external;
+
+    /// @notice Blacklist addresses, escalating existing freezes. Admin or Owner only.
+    /// @dev Nonempty atomic batch; one invalid entry reverts the whole call.
+    ///      Rejects zero addresses and preserves existing request triggers.
+    /// @param a Addresses to process.
     function blacklist(address[] calldata a) external;
+
+    /// @notice Clear Frozen blocks; other starting states revert. Admin or Owner only.
+    /// @dev Nonempty atomic batch; one invalid entry reverts the whole call.
+    /// @param a Addresses to process.
     function unfreeze(address[] calldata a) external;
+
+    /// @notice Clear Blacklisted blocks; other starting states revert. Admin or Owner only.
+    /// @dev Nonempty atomic batch; one invalid entry reverts the whole call.
+    /// @param a Addresses to process.
     function unblacklist(address[] calldata a) external;
+
+    /// @notice Downgrade Blacklisted addresses to Frozen while retaining their triggers. Admin or Owner only.
+    /// @dev Nonempty atomic batch; one invalid entry reverts the whole call.
+    /// @param a Addresses to process.
     function downgradeToFrozen(address[] calldata a) external;
 
     // ─── Pause ───────────────────────────────────────────────────
@@ -323,24 +438,77 @@ interface IExitDelayQueue {
     ///         originator or owner and a matching active route), or the Owner's
     ///         `resolveByOwner`, which reaches only requests with a blacklisted
     ///         party whether or not the queue is paused.
+    /// @param p Whether to pause user delivery and stuck-exit recovery.
     function setSecurityPerimeterPaused(bool p) external;
 
     // ─── Recovery ────────────────────────────────────────────────
 
+    /// @notice Resolve queued requests to an active recovery route. Admin or Owner only.
+    /// @dev Each request must have a blacklisted originator or owner and match the route's
+    ///      surface, sub-product and token. No unlock or pause restriction; transfers do not unwrap.
+    ///      The batch must be nonempty and succeeds atomically.
+    /// @param ids Requests to resolve.
+    /// @param routeId Registered route selecting the recovery destination.
     function resolveToProtocol(uint256[] calldata ids, bytes32 routeId) external;
+
+    /// @notice Resolve queued requests with any blacklisted recorded party. Owner only.
+    /// @dev No unlock or pause restriction; transfers do not unwrap. Rejects zero, this queue,
+    ///      WRBTC and each request's token as destinations. Nonempty batch; all-or-nothing.
+    /// @param ids Requests to resolve.
+    /// @param destination Destination chosen by the Owner.
     function resolveByOwner(uint256[] calldata ids, address destination) external;
 
+    /// @notice Register or replace a recovery route, including its active flag. Owner only.
+    /// @dev Destination cannot be zero, this queue, the route token or WRBTC. Pool top-ups
+    ///      require a feasible surface, a non-native token and destination equal to subProduct.
+    /// @param route Route configuration; active must be true for resolution to use it.
+    /// @return routeId Hash of abi.encode(surfaceId, subProduct, token, destination).
     function setRecoveryRoute(RecoveryRoute calldata route) external returns (bytes32 routeId);
+
+    /// @notice Delete a recovery route and remove its id from enumeration. Owner only.
+    /// @dev Emits RecoveryRouteRemoved even if the route was absent.
+    /// @param routeId Route to remove.
     function removeRecoveryRoute(bytes32 routeId) external;
+
+    /// @notice Set whether pool-top-up routes may be registered for a surface. Owner only.
+    /// @dev Affects route registration; does not disable already registered routes.
+    /// @param surfaceId Withdrawal surface to configure.
+    /// @param feasible Whether new or replacement top-up routes are permitted.
     function setTopUpFeasible(bytes32 surfaceId, bool feasible) external;
 
     // ─── Config ──────────────────────────────────────────
 
+    /// @notice Authorize a source to call the four withdrawal-recording functions. Owner only.
+    /// @dev Rejects zero. Adds the source to enumeration and enables its authorization lookup.
+    ///      An already authorized source is unchanged and emits no event.
+    /// @param src Trusted withdrawal-recording source.
     function addAllowedSource(address src) external;
+
+    /// @notice Revoke a source's withdrawal-recording permission. Owner only.
+    /// @dev Removes it from enumeration; an absent source is unchanged and emits no event.
+    ///      Existing requests remain queued and retain their normal settlement paths.
+    /// @param src Source to remove.
     function removeAllowedSource(address src) external;
+
+    /// @notice Record the intended native-RBTC pusher as provenance. Owner only.
+    /// @dev Accepts zero. Does not gate native receipts or grant withdrawal-recording permission.
+    /// @param pusher Intended native funding contract.
     function setNativePusher(address pusher) external;
+
+    /// @notice Replace the operational guardian. Owner only.
+    /// @dev Rejects zero; the Admin may equal the Owner.
+    /// @param newAdmin Guardian authorized for blocking, pause and protocol recovery operations.
     function setAdmin(address newAdmin) external;
+
+    /// @notice Set the minimum delay accepted for future requests. Owner only.
+    /// @dev Accepts zero; existing requests retain their recorded unlock times.
+    /// @param s Minimum delay in seconds.
     function setMinimumDelaySeconds(uint32 s) external;
+
+    /// @notice Transfer the full balance exceeding escrow liabilities to a destination. Owner only.
+    /// @dev Reverts if the destination is zero or escrow is underbacked after the transfer.
+    /// @param token Asset to sweep; address(0) denotes native RBTC.
+    /// @param to Surplus recipient.
     function sweepSurplus(address token, address to) external;
 
     // ─── Views ───────────────────────────────────────────────────
@@ -350,11 +518,28 @@ interface IExitDelayQueue {
     // catchable payout attempt, not a member of the external ABI a
     // caller or client is meant to use.
 
+    /// @notice Read a withdrawal request, including its current status.
+    /// @dev Unknown ids return a zero-initialized request with status None.
+    /// @param id Request identifier.
+    /// @return The stored request.
     function getRequest(uint256 id) external view returns (ExitRequest memory);
+
+    /// @notice Paginate queued request ids involving a recorded originator, owner or receiver.
+    /// @dev Page size is capped at MAX_GET_ACTIVE_PAGE. Set order may change between calls,
+    ///      so pagination can skip or repeat entries if requests settle between reads.
+    /// @param party Recorded party whose active requests to list.
+    /// @param cursor Starting set index; use zero for the first page.
+    /// @param n Requested page size.
+    /// @return ids Active request ids in this page.
+    /// @return nextCursor Next set index, or zero when there are no more entries.
     function getActive(address party, uint256 cursor, uint256 n)
         external
         view
         returns (uint256[] memory ids, uint256 nextCursor);
+
+    /// @notice Read an address's current block state.
+    /// @param a Address to inspect.
+    /// @return None, Frozen or Blacklisted.
     function blockStateOf(address a) external view returns (BlockState);
 
     /// @notice The fast operational guardian checked by `onlyAdminOrOwner`.
@@ -399,10 +584,28 @@ interface IExitDelayQueue {
         external
         view
         returns (address[] memory page, uint256 total);
+
+    /// @notice Read the request id retained as evidence for an address's block.
+    /// @dev Zero means no retained request trigger. Clearing a block resets the trigger;
+    ///      flat block calls and downgradeToFrozen preserve an existing trigger.
+    /// @param a Address to inspect.
+    /// @return Retained triggering request id, or zero.
     function blockTrigger(address a) external view returns (uint256);
 
+    /// @notice Read the total amount backing queued requests for an asset.
+    /// @param token Escrow asset; address(0) denotes native RBTC.
+    /// @return Aggregate queued amount, excluding unaccounted surplus.
     function totalEscrowed(address token) external view returns (uint256);
+
+    /// @notice Read a registered recovery route.
+    /// @dev Unknown or removed ids return a zero-initialized, inactive route.
+    /// @param routeId Route identifier.
+    /// @return Stored route configuration.
     function getRecoveryRoute(bytes32 routeId) external view returns (RecoveryRoute memory);
+
+    /// @notice List all authorized withdrawal-recording sources.
+    /// @dev Enumeration order is not stable after removals.
+    /// @return Currently authorized source addresses.
     function allowedSources() external view returns (address[] memory);
 
     /// @notice Max page size for the paginated `getActive` / `blockedAccounts`
