@@ -317,6 +317,12 @@ in fork tests: the before-state anchor is the parent of the execution block.
 Historical RPC state is required. Canonical hashes are rechecked; production
 finality depth remains an operator requirement.
 
+Keep concrete operator manifests outside the repository: their artifact and profile
+paths may identify private local files. The finalized deployment record retains the
+original manifest hash and receipt proof. Preserve the exact original manifest
+privately; changing its paths creates different bytes and must not be relabelled as
+the manifest bound by an existing proof. The example below is an unsealed template.
+
 Manifest version 1 (replace every placeholder with reviewed chain evidence):
 
 ```json

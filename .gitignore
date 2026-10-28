@@ -33,3 +33,7 @@ node_modules/
 
 # Python release-guard tests
 __pycache__/
+
+# Operator manifests can contain private local artifact/profile paths.
+# Finalized deployment records retain their immutable manifest hashes and proofs.
+deployments/**/*.multisig-upgrade-*.manifest.json
