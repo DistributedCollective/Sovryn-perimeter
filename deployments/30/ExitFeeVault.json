@@ -4,7 +4,7 @@
   "proxyAddress": "0xdde75f75ff33aa802f2316ccae2be77823fc6f9b",
   "implAddress": "0x8f977f4c9dccce1a0306a34944c0460e4445deb4",
   "implBytecodeHash": "0x270528aa2181e4eb17c3ee850bdab3a5f7a13b68aebf2238c1cdfa58675a0c69",
-  "deploymentBlock": 9179117,
+  "deploymentBlock": 9179118,
   "deploymentTx": "0x2ae9f18519bca0d81fa4695a3f63ded3932f926959c9fc661df6b5aef5b28818",
   "timestamp": 1787574212713,
   "gitSha": "2c7afb4",
